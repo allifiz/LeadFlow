@@ -64,5 +64,24 @@ function syncLeadFlow() {
       }
       pageToken=result.nextPageToken;
     } while(pageToken && ++pages<3);
+    // Generate drafts only. No dispatch or consent changes.
+    processDraftQueue_(props, token);
   } finally {lock.releaseLock();}
+}
+
+function processDraftQueue_(props,token) {
+  const headers={Authorization:'Bearer '+token};
+  const bypass=props.getProperty('LEADFLOW_VERCEL_BYPASS');
+  if(bypass) headers['x-vercel-protection-bypass']=bypass;
+  for(let i=0;i<3;i++){
+    try {
+      const r=UrlFetchApp.fetch(LEADFLOW_ENDPOINT.replace('action=import','action=draft-worker'),{
+        method:'post',contentType:'application/json',headers,payload:'{}',muteHttpExceptions:true,followRedirects:false
+      });
+      if(r.getResponseCode()!==200){console.warn('Draft worker HTTP '+r.getResponseCode());break;}
+      const result=JSON.parse(r.getContentText());
+      console.log('Draft worker: '+result.state+(result.attempts?' (attempt '+result.attempts+')':''));
+      if(result.state!=='ready')break;
+    }catch(e){console.warn('Draft worker request failed');break;}
+  }
 }
