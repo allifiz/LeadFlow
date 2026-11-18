@@ -25,10 +25,20 @@ $('search').oninput=render;$('filter').onchange=render;
 $('reload').onclick=()=>refresh().catch(e=>$('notice').textContent=e.message);
 $('pause').onclick=async()=>{if(state.paused&&!confirm('Aktifkan pengiriman pertama otomatis hanya ke kontak dengan opt-in?'))return;try{await api('pause',{paused:!state.paused});await refresh();}catch(e){$('notice').textContent=e.message;}};
 $('import').onclick=async()=>{try{const rows=parseImport($('importData').value);if(!Array.isArray(rows)||!rows.length)throw Error('Data kosong / format tidak valid');const r=await api('import',{leads:rows});$('importResult').textContent='Ditambah '+r.added+' · Duplikat '+r.duplicates+' · Invalid '+r.errors.length;await refresh();}catch(e){$('importResult').textContent=e.message;}};
-function open(l){selected=l;$('detailName').textContent=l.name;$('detailInfo').textContent=[l.phone,l.email,label[l.status],l.last_error].filter(Boolean).join(' · ');$('message').value=l.draft;$('evidence').value=l.opt_in_evidence||'';$('confirmed').checked=false;$('detailNotice').textContent='';$('consent').disabled=l.status!=='new';$('manual').disabled=l.status!=='new';$('generate').disabled=l.status==='blocked';$('copy').disabled=l.status==='blocked';wa();$('details').showModal();}
+function open(l){selected=l;$('detailName').textContent=l.name;$('detailInfo').textContent=[l.phone,l.email,label[l.status],l.last_error].filter(Boolean).join(' · ');$('message').value=l.draft;$('evidence').value=l.opt_in_evidence||'';$('confirmed').checked=false;$('detailNotice').textContent=l.draft_engine==='AI'?'Draft AI tersimpan: '+(l.draft_model||''):'Draft awal: template lokal';$('consent').disabled=l.status!=='new';$('manual').disabled=l.status!=='new';$('generate').textContent='Generate draft';$('generate').disabled=l.status==='blocked';$('copy').disabled=l.status==='blocked';wa();$('details').showModal();}
 function wa(){const available=selected?.wa_verified&&selected?.opt_in_at&&selected?.status==='new'&&/^628\d{7,12}$/.test(selected.phone);$('waLink').hidden=!available;if(available)$('waLink').href='https://wa.me/'+selected.phone+'?text='+encodeURIComponent($('message').value);}
 $('message').oninput=wa;
-$('generate').onclick=async()=>{try{const r=await api('draft',{id:selected.id});$('message').value=r.draft;wa();$('detailNotice').textContent='Draft: '+r.engine;}catch(e){$('detailNotice').textContent=e.message;}};
+$('generate').onclick=async()=>{
+ const id=selected.id, previous=$('message').value;
+ $('generate').disabled=true;$('generate').textContent='Generating...';$('detailNotice').textContent='Menghubungi 9Router...';
+ try{
+  const r=await api('draft',{id,previous});
+  const l=leads.find(x=>x.id===id);
+  if(l)Object.assign(l,{draft:r.draft,draft_engine:r.engine,draft_model:r.model});
+  if(selected?.id===id&&$('details').open){$('message').value=r.draft;wa();$('detailNotice').textContent='Draft AI tersimpan: '+r.model;}
+ }catch(e){if(selected?.id===id&&$('details').open)$('detailNotice').textContent=e.message;}
+ finally{if(selected?.id===id){$('generate').disabled=selected.status==='blocked';$('generate').textContent='Generate draft';}}
+};
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('message').value);$('detailNotice').textContent='Draft disalin. Periksa izin penerima sebelum menghubungi.';}catch{$('detailNotice').textContent='Clipboard tidak tersedia; pilih teks secara manual.';}};
 async function change(action,data){try{await api(action,{id:selected.id,...data});await refresh();$('details').close();}catch(e){$('detailNotice').textContent=e.message;}}
 $('consent').onclick=()=>change('consent',{evidence:$('evidence').value,confirmed:$('confirmed').checked});
