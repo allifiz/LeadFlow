@@ -6,7 +6,8 @@ const api=async(action,body)=>{
 };
 const label={new:'Baru',sending:'Sedang mengirim',submitted:'Diajukan ke WhatsApp',unknown:'Perlu cek',manual:'Manual',blocked:'Jangan hubungi'};
 const node=(tag,text,cls)=>{const x=document.createElement(tag);if(text!=null)x.textContent=text;if(cls)x.className=cls;return x};
-async function refresh(){state=await api('list');leads=state.leads;$('total').textContent=leads.length;$('fresh').textContent=leads.filter(x=>x.status==='new').length;$('sent').textContent=leads.filter(x=>x.status==='submitted').length;$('unknown').textContent=leads.filter(x=>['unknown','sending'].includes(x.status)).length;$('automationState').textContent=state.hinaConfigured?'Gateway Hina dikonfigurasi · cek status di detail kontak':'Gateway Hina belum dikonfigurasi';$('pause').textContent=state.paused?'Aktifkan antrean':'Jeda antrean';$('pause').disabled=!state.configured&&state.paused;render();}
+const draftLabels={ready:'AI ready',pending:'AI pending',generating:'AI generating',failed:'AI failed',excluded:'Tidak dijadwalkan'};
+async function refresh(){state=await api('list');leads=state.leads;$('total').textContent=leads.length;$('fresh').textContent=leads.filter(x=>x.status==='new').length;$('sent').textContent=leads.filter(x=>x.status==='submitted').length;$('unknown').textContent=leads.filter(x=>['unknown','sending'].includes(x.status)).length;$('automationState').textContent=state.hinaConfigured?'Gateway Hina dikonfigurasi · cek status di detail kontak':'Gateway Hina belum dikonfigurasi';$('pause').textContent=state.paused?'Aktifkan antrean':'Jeda antrean';$('pause').disabled=!state.configured&&state.paused;const counts={ready:0,pending:0,generating:0,failed:0};for(const l of leads){if(Object.hasOwn(counts,l.draft_state))counts[l.draft_state]++;}$('draftQueueSummary').textContent=!state.aiConfigured?'AI belum dikonfigurasi':Object.entries(counts).map(([k,v])=>draftLabels[k]+': '+v).join(' · ');$('draftRun').disabled=!state.aiConfigured;render();}
 // Manual click-to-chat only. Opening WhatsApp never records consent or delivery.
 function canOpenWa(l){return l?.status==='new'&&!l.blocked_at&&/^628\d{7,12}$/.test(l.phone||'');}
 function waUrl(l,message){return 'https://wa.me/'+l.phone+'?text='+encodeURIComponent(message||'');}
@@ -60,7 +61,7 @@ function render(){
  const visible=leads.filter(x=>(!status||x.status===status)&&[x.name,x.phone,x.email,x.category].join(' ').toLowerCase().includes(search));
  $('rows').replaceChildren();$('empty').hidden=visible.length>0;
  for(const l of visible){const tr=node('tr');const name=node('td');name.append(node('strong',l.name),node('small',[l.category,l.location].filter(Boolean).join(' · ')));if(/^https?:\/\//i.test(l.source)){const a=node('a','Sumber');a.href=l.source;a.target='_blank';a.rel='noopener noreferrer';name.append(a);}
- const phone=node('td',l.phone?'+'+l.phone:'—');if(l.wa_verified)phone.append(node('small','WA terverifikasi'));const st=node('td');st.append(node('span',label[l.status]||l.status,'pill '+l.status));if(l.opt_in_at)st.append(node('small','Opt-in tercatat'));
+ const phone=node('td',l.phone?'+'+l.phone:'—');if(l.wa_verified)phone.append(node('small','WA terverifikasi'));const st=node('td');st.append(node('span',label[l.status]||l.status,'pill '+l.status));if(l.opt_in_at)st.append(node('small','Opt-in tercatat'));if(l.draft_state&&l.draft_state!=='excluded')st.append(node('small',draftLabels[l.draft_state]||l.draft_state));
  const actions=node('td');const b=node('button','Detail');b.onclick=()=>open(l);actions.append(b);
  if(canSendDirect(l)){
   const send=node('button','Kirim pesan','primary');
@@ -82,9 +83,10 @@ $('loginForm').onsubmit=async e=>{e.preventDefault();token=$('token').value;try{
 $('logout').onclick=()=>{token='';leads=[];state={};selected=null;$('rows').replaceChildren();$('workspace').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('loginError').textContent='';};
 $('search').oninput=render;$('filter').onchange=render;
 $('reload').onclick=()=>refresh().catch(e=>$('notice').textContent=e.message);
+$('draftRun').onclick=async()=>{const b=$('draftRun');b.disabled=true;b.textContent='Memproses...';try{const r=await api('draft-worker',{});await refresh();$('notice').textContent='Draft worker: '+r.state;}catch(e){$('notice').textContent=e.message;}finally{b.disabled=!state.aiConfigured;b.textContent='Proses satu draft';}};
 $('pause').onclick=async()=>{if(state.paused&&!confirm('Aktifkan pengiriman pertama otomatis hanya ke kontak dengan opt-in?'))return;try{await api('pause',{paused:!state.paused});await refresh();}catch(e){$('notice').textContent=e.message;}};
 $('import').onclick=async()=>{try{const rows=parseImport($('importData').value);if(!Array.isArray(rows)||!rows.length)throw Error('Data kosong / format tidak valid');const r=await api('import',{leads:rows});$('importResult').textContent='Ditambah '+r.added+' · Duplikat '+r.duplicates+' · Invalid '+r.errors.length;await refresh();}catch(e){$('importResult').textContent=e.message;}};
-function open(l){selected=l;$('detailName').textContent=l.name;$('detailInfo').textContent=[l.phone,l.email,label[l.status],l.last_error].filter(Boolean).join(' · ');$('message').value=l.draft;$('evidence').value=l.opt_in_evidence||'';$('confirmed').checked=false;$('detailNotice').textContent=l.draft_engine==='AI'?'Draft AI tersimpan: '+(l.draft_model||''):'Draft awal: template lokal';$('consent').disabled=l.status!=='new';$('manual').disabled=l.status!=='new';$('generate').textContent='Generate draft';$('generate').disabled=l.status==='blocked';$('copy').disabled=l.status==='blocked';$('sendDirect').hidden=!canSendDirect(l);$('sendDirect').disabled=false;wa();$('details').showModal();showHinaStatus(l);}
+function open(l){selected=l;$('detailName').textContent=l.name;$('detailInfo').textContent=[l.phone,l.email,label[l.status],l.last_error].filter(Boolean).join(' · ');$('message').value=l.draft;$('evidence').value=l.opt_in_evidence||'';$('confirmed').checked=false;$('detailNotice').textContent=l.draft_engine==='AI'?'Draft AI tersimpan: '+(l.draft_model||''):(draftLabels[l.draft_state]||'Draft awal: template lokal')+(l.draft_error?' · '+l.draft_error:'');$('consent').disabled=l.status!=='new';$('manual').disabled=l.status!=='new';$('generate').textContent='Generate draft';$('generate').disabled=l.status==='blocked';$('copy').disabled=l.status==='blocked';$('sendDirect').hidden=!canSendDirect(l);$('sendDirect').disabled=false;wa();$('details').showModal();showHinaStatus(l);}
 function wa(){const available=canOpenWa(selected);$('waLink').hidden=!available;if(available){$('waLink').href=waUrl(selected,$('message').value);$('waLink').title='Buka draft di WhatsApp; belum dikirim';}}
 $('message').oninput=wa;
 $('sendDirect').onclick=()=>sendDirect(selected,$('message').value,$('sendDirect'),$('detailNotice'));
@@ -97,7 +99,7 @@ $('generate').onclick=async()=>{
  try{
   const r=await api('draft',{id,previous});
   const l=leads.find(x=>x.id===id);
-  if(l)Object.assign(l,{draft:r.draft,draft_engine:r.engine,draft_model:r.model});
+  if(l)Object.assign(l,{draft:r.draft,draft_engine:r.engine,draft_model:r.model,draft_state:'ready',draft_error:null});
   if(selected?.id===id&&$('details').open){$('message').value=r.draft;wa();$('detailNotice').textContent='Draft AI tersimpan: '+r.model;}
  }catch(e){if(selected?.id===id&&$('details').open)$('detailNotice').textContent=e.message;}
  finally{if(selected?.id===id){$('generate').disabled=selected.status==='blocked';$('generate').textContent='Generate draft';}}
