@@ -148,7 +148,7 @@ const choicePresets={
  fInstruction:[['','Tanpa preferensi khusus'],['Prioritaskan bisnis lokal dan calon pelanggan yang relevan.','Bisnis lokal'],['Prioritaskan bisnis independen dan UMKM lokal.','UMKM independen'],['Prioritaskan bisnis aktif dengan kontak publik yang mudah diverifikasi.','Kontak mudah diverifikasi'],['Prioritaskan bisnis dengan kebutuhan website yang paling jelas dan relevan.','Kebutuhan website tinggi'],['Prioritaskan sekolah swasta dan lembaga pendidikan lokal.','Sekolah swasta & lembaga pendidikan']]
 };
 const regionMemo=new Map();
-let regionEdit=null,regionSeq=0;
+let regionEdit=null,regionSeq=0,finderSaving=false;
 const normScope=v=>String(v||'').trim().replace(/\s+/g,' ').toLocaleLowerCase('id-ID');
 function drawChoices(id,selected,multi,extras=[]){
  const picked=multi?(Array.isArray(selected)?selected:[]):[selected??''];
@@ -180,7 +180,10 @@ function choiceName(id){const select=$(id);return select.options[select.selected
 function regionMessage(text='',error=false){$('fRegionNotice').textContent=text;$('fRegionRetry').hidden=!error;}
 function updateRegionReady(){
  const ready=regionEdit&&(!regionEdit.dirty&&regionEdit.original||!regionEdit.loading&&$('fProvince').value&&$('fRegency').value&&$('fDistrict').value);
- $('finderSave').disabled=!ready;
+ $('finderSave').disabled=!ready||finderSaving;
+ $('fRegionType').disabled=!!regionEdit?.loading;
+ $('fRegency').disabled=!!regionEdit?.loading;
+ $('fDistrict').disabled=!!regionEdit?.loading;
 }
 function resetDistrict(){ $('fDistrictFields').hidden=true;regionOptions('fDistrict',[],'Semua kecamatan',true); }
 function displayRegencies(){
@@ -206,7 +209,7 @@ async function loadRegencies(province,desiredName='',desiredDistrict=''){
   const rows=await getRegions('regencies',province);if(regionEdit!==edit||seq!==regionSeq)return;
   edit.regencies=rows;displayRegencies();regionMessage();
   const match=rows.find(x=>normScope(x.name)===normScope(desiredName));
-  if(match){$('fRegency').value=match.code;await loadDistrict(match.code);if(regionEdit===edit&&desiredDistrict){const options=Array.from($('fDistrict').options);const district=options.find(x=>normScope(x.text)===normScope(desiredDistrict));if(district)$('fDistrict').value=district.value;}}
+  if(match){$('fRegency').value=match.code;const nextSeq=regionSeq+1;await loadDistrict(match.code);if(regionEdit===edit&&regionSeq===nextSeq&&desiredDistrict){const options=Array.from($('fDistrict').options);const district=options.find(x=>normScope(x.text)===normScope(desiredDistrict));if(district)$('fDistrict').value=district.value;}}
  }catch(e){if(regionEdit===edit&&seq===regionSeq)regionMessage(e.message,true);}
  finally{if(regionEdit===edit&&seq===regionSeq){edit.loading=false;updateRegionReady();}}
 }
@@ -281,11 +284,11 @@ function openFinderEditor(c){
 }
 $('finderReload').onclick=loadFinder;$('finderNew').onclick=()=>openFinderEditor(null);
 $('finderForm').onsubmit=async e=>{
- e.preventDefault();const button=$('finderSave');button.disabled=true;
+ e.preventDefault();if(finderSaving)return;finderSaving=true;$('finderSave').disabled=true;
  try{
   const c={...(editingCampaign?{id:editingCampaign}:{}),name:$('fName').value,enabled:$('fEnabled').checked,daily_limit:Number($('fLimit').value),minimum_priority:Number($('fPriority').value),website_status:readChoices('fWebsite'),contact:readChoices('fContact'),instruction:readChoices('fInstruction'),categories:readChoices('fCategories',true),services:readChoices('fServices',true),sources:readChoices('fSources',true),excluded_categories:[],...selectedScope()};
   if(!c.services.length)throw Error('Pilih minimal satu jenis jasa.');
   if(c.categories.length>20)throw Error('Pilih maksimal 20 kategori bisnis.');
   await persistCampaign(c);$('finderEditor').close();
- }catch(e){$('finderEditorNotice').textContent=e.message;}finally{updateRegionReady();}
+ }catch(e){$('finderEditorNotice').textContent=e.message;}finally{finderSaving=false;updateRegionReady();}
 };
