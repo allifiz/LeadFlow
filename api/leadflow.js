@@ -129,6 +129,29 @@ async function generateDraft(c,lead,body){
     }
 }
 
+const regionCache=new Map();
+async function finderRegions(url){
+ const level=url.searchParams.get('level'),parent=url.searchParams.get('parent')||'';
+ let path;
+ if(level==='provinces'&&!parent)path='provinces.json';
+ else if(level==='regencies'&&/^\d{2}$/.test(parent))path='regencies/'+parent+'.json';
+ else if(level==='districts'&&/^\d{2}\.\d{2}$/.test(parent))path='districts/'+parent+'.json';
+ else return json({error:'Kode wilayah tidak valid'},400);
+ try{
+  const cached=regionCache.get(path);
+  if(cached&&cached.until>Date.now())return json({data:cached.data});
+  const r=await fetch('https://wilayah.id/api/'+path,{signal:AbortSignal.timeout(8000),redirect:'error',headers:{Accept:'application/json'}});
+  if(!r.ok)throw Error('Region HTTP '+r.status);
+  const payload=await r.json();
+  const pattern=level==='provinces'?/^\d{2}$/:level==='regencies'?/^\d{2}\.\d{2}$/:/^\d{2}\.\d{2}\.\d{2}$/;
+  if(!Array.isArray(payload.data)||!payload.data.length||payload.data.length>1000||!payload.data.every(x=>typeof x.name==='string'&&x.name.trim()&&x.name.length<=150&&pattern.test(x.code)&&(!parent||x.code.startsWith(parent+'.'))))throw Error('Invalid region response');
+  const data=payload.data.map(x=>({code:x.code,name:x.name})).sort((a,b)=>a.name.localeCompare(b.name,'id'));
+  if(regionCache.size>=256)regionCache.delete(regionCache.keys().next().value);
+  regionCache.set(path,{data,until:Date.now()+86400000});
+  return json({data});
+ }catch(e){console.warn('Finder region lookup',e?.name);return json({error:'Data wilayah sedang tidak tersedia. Coba lagi.'},502);}
+}
+
 export default {
  async fetch(request){
   const url=new URL(request.url), action=url.searchParams.get('action')||'list', auth=request.headers.get('authorization');
@@ -140,6 +163,7 @@ export default {
   }
   if(!admin&&!(['import','draft-worker','finder-config','finder-import'].includes(action)&&importer)) return json({error:'Unauthorized atau ADMIN_TOKEN belum diatur (minimal 24 karakter)'},401);
   try{
+   if(action==='finder-regions'&&request.method==='GET')return finderRegions(url);
    const c=await ready();
    if(action==='finder-config'&&request.method==='GET')return json(await finderConfig(c));
    if(action==='finder-studio'&&request.method==='GET')return json(await studio(c));
