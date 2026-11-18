@@ -59,6 +59,7 @@ function syncLeadFlow() {
           if (v2 && response.getResponseCode()===409) { props.setProperty(key,String(Date.now())); console.warn('Finder V2 batch rejected: campaign changed or date expired.'); continue; }
           if (response.getResponseCode()!==200) throw new Error('LeadFlow HTTP '+response.getResponseCode());
           const r=JSON.parse(response.getContentText());
+          if (v2 && r.replayed===true) { props.setProperty(key,String(Date.now())); console.log('Finder V2: campaign already imported for this date'); continue; }
           if (!Number.isInteger(r.added)||!Number.isInteger(r.duplicates)||(v2?!Number.isInteger(r.invalid)||r.added+r.duplicates+r.invalid!==leads.length:!Array.isArray(r.errors)||r.added+r.duplicates+r.errors.length!==leads.length)) throw new Error('Unexpected response');
           props.setProperty(key,String(Date.now()));
           console.log('Batch imported: added='+r.added+' duplicates='+r.duplicates+' invalid='+(v2?r.invalid:r.errors.length)+(v2?' campaign='+payload.campaign_id:''));
