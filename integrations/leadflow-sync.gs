@@ -66,12 +66,26 @@ function syncLeadFlow() {
   } finally {lock.releaseLock();}
 }
 function findPlain(part) {
-  if (part.mimeType==='text/plain' && part.body?.data) {
-    const encoded=part.body.data;
-    return Utilities.newBlob(Utilities.base64DecodeWebSafe(encoded+'='.repeat((4-encoded.length%4)%4))).getDataAsString('UTF-8');
+  if (part.mimeType === 'text/plain' && part.body?.data) {
+    const raw = String(part.body.data).trim();
+    // Some wrappers expose an already-decoded JSON body.
+    if (raw.startsWith('{')) return raw;
+    // Accept both URL-safe and standard base64, with or without padding.
+    const encoded = raw.replace(/\s/g, '')
+      .replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+    if (!/^[A-Za-z0-9+/]+$/.test(encoded) || encoded.length % 4 === 1) {
+      throw new Error('Invalid Gmail body encoding');
+    }
+    const padded = encoded + '='.repeat((4 - encoded.length % 4) % 4);
+    try {
+      return Utilities.newBlob(Utilities.base64Decode(padded))
+        .getDataAsString('UTF-8');
+    } catch (e) {
+      throw new Error('Gmail base64 decode failed');
+    }
   }
-  for (const child of part.parts||[]) {
-    const s=findPlain(child);
+  for (const child of part.parts || []) {
+    const s = findPlain(child);
     if (s) return s;
   }
   return '';
