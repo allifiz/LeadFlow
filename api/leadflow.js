@@ -10,7 +10,7 @@ const valid=(given,secret)=>{
 };
 const query=(c,sql,args=[])=>c.execute({sql,args});
 const day=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
-const configured=()=>env.WA_AUTO_SEND==='true'&&!!env.WA_ACCESS_TOKEN&&/^\d+$/.test(env.WA_PHONE_NUMBER_ID??'')&&/^v\d+\.\d+$/.test(env.WA_GRAPH_VERSION??'')&&!!env.WA_TEMPLATE_NAMES?.split(',').map(x=>x.trim()).filter(x=>/^[a-z0-9_]+$/.test(x)).length;
+const configured=()=>!env.HINA_GATEWAY_URL&&env.WA_AUTO_SEND==='true'&&!!env.WA_ACCESS_TOKEN&&/^\d+$/.test(env.WA_PHONE_NUMBER_ID??'')&&/^v\d+\.\d+$/.test(env.WA_GRAPH_VERSION??'')&&!!env.WA_TEMPLATE_NAMES?.split(',').map(x=>x.trim()).filter(x=>/^[a-z0-9_]+$/.test(x)).length;
 const hinaConfigured=()=>!!env.HINA_GATEWAY_URL&&String(env.HINA_GATEWAY_TOKEN||'').length>=32;
 async function hinaTakeover(phone,action){
  const base=new URL(env.HINA_GATEWAY_URL);
@@ -23,6 +23,44 @@ async function hinaTakeover(phone,action){
  const result=await r.json();
  if(typeof result.takeover!=='boolean'||typeof result.connected!=='boolean')throw Error('Unexpected gateway response');
  return result;
+}
+async function sendWithHina(c,lead,body){
+ if(!hinaConfigured()) return json({error:'Gateway Hina belum dikonfigurasi'},503);
+ if(body.confirmed!==true||!eligible(lead))return json({error:'Perlu persetujuan penerima yang tercatat dan konfirmasi pengiriman'},409);
+ const message=typeof body.message==='string'?body.message.trim():'';
+ if(!message||message.length>2000)return json({error:'Pesan harus berisi 1-2000 karakter'},400);
+ try{
+  const status=await hinaTakeover(lead.phone,'status');
+  if(!status.connected)return json({error:'WhatsApp Hina belum terhubung'},503);
+ }catch{return json({error:'Gateway Hina belum tersedia; tidak ada pesan dikirim'},503);}
+ const id=lead.id;
+ const claimed=await query(c,"INSERT OR IGNORE INTO attempts(lead_id,day,template) SELECT id,?,'hina-individual' FROM leads WHERE id=? AND status='new' AND wa_verified=1 AND opt_in_at IS NOT NULL AND length(trim(opt_in_evidence))>0 AND blocked_at IS NULL",[day(),id]);
+ if(!claimed.rowsAffected)return json({error:'Lead sudah ditangani atau persetujuan tidak tersedia'},409);
+ const moved=await query(c,"UPDATE leads SET status='sending' WHERE id=? AND status='new' AND wa_verified=1 AND opt_in_at IS NOT NULL AND length(trim(opt_in_evidence))>0 AND blocked_at IS NULL",[id]);
+ if(!moved.rowsAffected){await query(c,"UPDATE attempts SET state='cancelled' WHERE lead_id=?",[id]);return json({error:'Pengiriman dibatalkan karena status lead berubah'},409);}
+ try{
+  const base=new URL(env.HINA_GATEWAY_URL);
+  if(base.protocol!=='https:'||base.username||base.password||base.search||base.hash)throw Error('Invalid gateway URL');
+  const r=await fetch(base.href.replace(/\/$/,'')+'/leadflow/send',{
+   method:'POST',headers:{Authorization:'Bearer '+env.HINA_GATEWAY_TOKEN,'Content-Type':'application/json'},
+   body:JSON.stringify({leadId:id,phone:lead.phone,message,recipientOptIn:true,manualApproval:true}),
+   signal:AbortSignal.timeout(25000),redirect:'error'
+  });
+  const result=await r.json();
+  if(!r.ok||result.ok!==true||result.takeover!==true||typeof result.providerId!=='string'||!result.providerId)throw Error('Unconfirmed dispatch');
+  await c.batch([
+   {sql:"UPDATE attempts SET state='submitted',provider_id=? WHERE lead_id=?",args:[result.providerId,id]},
+   {sql:"UPDATE leads SET status=CASE WHEN blocked_at IS NULL THEN 'submitted' ELSE 'blocked' END,provider_id=?,last_error=NULL WHERE id=?",args:[result.providerId,id]}
+  ],'write');
+  return json({ok:true,takeover:true,status:'submitted'});
+ }catch(e){
+  console.warn('Hina dispatch uncertain',e?.name);
+  await c.batch([
+   {sql:"UPDATE attempts SET state='unknown' WHERE lead_id=?",args:[id]},
+   {sql:"UPDATE leads SET status=CASE WHEN blocked_at IS NULL THEN 'unknown' ELSE 'blocked' END,last_error='Periksa chat WhatsApp Hina; tidak ada retry otomatis' WHERE id=?",args:[id]}
+  ],'write');
+  return json({error:'Pengiriman belum terkonfirmasi. Periksa chat WhatsApp Hina; tidak ada retry otomatis.'},502);
+ }
 }
 async function runCron(c){
  if(!configured()) return {submitted:0,reason:'WhatsApp otomatis belum diaktifkan atau env belum lengkap'};
@@ -90,6 +128,7 @@ export default {
    if(!Number.isSafeInteger(id)||id<1) return json({error:'ID tidak valid'},400);
    const lead=(await query(c,"SELECT * FROM leads WHERE id=?",[id])).rows[0];
    if(!lead) return json({error:'Lead tidak ditemukan'},404);
+   if(action==='send-hina')return sendWithHina(c,lead,body);
    if(action==='takeover'){
     if(!hinaConfigured())return json({error:'Gateway Hina belum dikonfigurasi'},503);
     if(!mobileNumber(lead.phone)||!['status','on','off'].includes(body.mode))return json({error:'Nomor atau mode tidak valid'},400);
