@@ -10,6 +10,36 @@ async function refresh(){state=await api('list');leads=state.leads;$('total').te
 // Manual click-to-chat only. Opening WhatsApp never records consent or delivery.
 function canOpenWa(l){return l?.status==='new'&&!l.blocked_at&&/^628\d{7,12}$/.test(l.phone||'');}
 function waUrl(l,message){return 'https://wa.me/'+l.phone+'?text='+encodeURIComponent(message||'');}
+function canTakeover(l){return state.hinaConfigured&&/^628\d{7,12}$/.test(l?.phone||'');}
+async function toggleTakeover(l,mode){
+ return api('takeover',{id:l.id,mode});
+}
+async function showHinaStatus(l,mode='status'){
+ const current=l.id;
+ $('takeoverOn').disabled=true;$('takeoverOff').disabled=true;
+ if(!canTakeover(l)){$('hinaStatus').textContent='Gateway belum dikonfigurasi atau nomor tidak valid.';return;}
+ $('hinaStatus').textContent='Memeriksa Hina...';
+ try{
+  const r=await toggleTakeover(l,mode);
+  if(selected?.id!==current||!$('details').open)return;
+  $('hinaStatus').textContent=(r.takeover?'OFF · Kamu menangani chat':'ON · Hina membalas')+(r.connected?' · WhatsApp terhubung':' · WhatsApp belum terhubung');
+  $('takeoverOn').disabled=r.takeover;$('takeoverOff').disabled=!r.takeover;
+ }catch(e){if(selected?.id===current){$('hinaStatus').textContent=e.message;$('takeoverOn').disabled=false;$('takeoverOff').disabled=false;}}
+}
+async function openWithTakeover(event,l,message,notice){
+ if(!state.hinaConfigured)return;
+ event.preventDefault();
+ const tab=window.open('about:blank','_blank');
+ if(!tab){notice.textContent='Izinkan popup browser lalu coba lagi.';return;}
+ tab.opener=null;
+ try{
+  const result=await toggleTakeover(l,'on');
+  if(!result.takeover)throw Error('Human takeover belum aktif');
+  if(!result.connected)throw Error('WhatsApp Hina tidak terhubung. Human takeover tetap aktif.');
+  tab.location.replace(waUrl(l,message));
+  notice.textContent='Human takeover aktif. Pesan belum terkirim; tekan Kirim di WhatsApp.';
+ }catch(e){tab.close();notice.textContent=e.message;}
+}
 function render(){
  const search=$('search').value.toLowerCase(),status=$('filter').value;
  const visible=leads.filter(x=>(!status||x.status===status)&&[x.name,x.phone,x.email,x.category].join(' ').toLowerCase().includes(search));
@@ -21,7 +51,7 @@ function render(){
   const send=node('a','Kirim pesan','button');
   send.href=waUrl(l,l.draft);send.target='_blank';send.rel='noopener noreferrer';send.style.display='inline-block';send.style.marginLeft='6px';
   send.title='Buka WhatsApp dengan draft; periksa izin penerima dan tekan Kirim di WhatsApp.';
-  send.onclick=()=>{$('notice').textContent='WhatsApp dibuka untuk '+l.name+'. Pesan belum terkirim; tandai sudah dihubungi setelah mengirim.';};
+  send.onclick=e=>{if(state.hinaConfigured){openWithTakeover(e,l,l.draft,$('notice'));}else{$('notice').textContent='WhatsApp dibuka. Gateway Hina belum aktif; auto reply belum dinonaktifkan.';}};
   actions.append(send);
  }else{const send=node('button','Kirim pesan');send.disabled=true;send.style.marginLeft='6px';send.title=l.status!=='new'?'Lead sudah ditangani atau diblokir':'Nomor seluler tidak tersedia';actions.append(send);}
  tr.append(name,phone,node('td',l.email||'—'),st,actions);$('rows').append(tr);}
@@ -36,10 +66,12 @@ $('search').oninput=render;$('filter').onchange=render;
 $('reload').onclick=()=>refresh().catch(e=>$('notice').textContent=e.message);
 $('pause').onclick=async()=>{if(state.paused&&!confirm('Aktifkan pengiriman pertama otomatis hanya ke kontak dengan opt-in?'))return;try{await api('pause',{paused:!state.paused});await refresh();}catch(e){$('notice').textContent=e.message;}};
 $('import').onclick=async()=>{try{const rows=parseImport($('importData').value);if(!Array.isArray(rows)||!rows.length)throw Error('Data kosong / format tidak valid');const r=await api('import',{leads:rows});$('importResult').textContent='Ditambah '+r.added+' · Duplikat '+r.duplicates+' · Invalid '+r.errors.length;await refresh();}catch(e){$('importResult').textContent=e.message;}};
-function open(l){selected=l;$('detailName').textContent=l.name;$('detailInfo').textContent=[l.phone,l.email,label[l.status],l.last_error].filter(Boolean).join(' · ');$('message').value=l.draft;$('evidence').value=l.opt_in_evidence||'';$('confirmed').checked=false;$('detailNotice').textContent=l.draft_engine==='AI'?'Draft AI tersimpan: '+(l.draft_model||''):'Draft awal: template lokal';$('consent').disabled=l.status!=='new';$('manual').disabled=l.status!=='new';$('generate').textContent='Generate draft';$('generate').disabled=l.status==='blocked';$('copy').disabled=l.status==='blocked';wa();$('details').showModal();}
+function open(l){selected=l;$('detailName').textContent=l.name;$('detailInfo').textContent=[l.phone,l.email,label[l.status],l.last_error].filter(Boolean).join(' · ');$('message').value=l.draft;$('evidence').value=l.opt_in_evidence||'';$('confirmed').checked=false;$('detailNotice').textContent=l.draft_engine==='AI'?'Draft AI tersimpan: '+(l.draft_model||''):'Draft awal: template lokal';$('consent').disabled=l.status!=='new';$('manual').disabled=l.status!=='new';$('generate').textContent='Generate draft';$('generate').disabled=l.status==='blocked';$('copy').disabled=l.status==='blocked';wa();$('details').showModal();showHinaStatus(l);}
 function wa(){const available=canOpenWa(selected);$('waLink').hidden=!available;if(available){$('waLink').href=waUrl(selected,$('message').value);$('waLink').title='Buka draft di WhatsApp; belum dikirim';}}
 $('message').oninput=wa;
-$('waLink').onclick=()=>{$('detailNotice').textContent='WhatsApp dibuka. Periksa izin penerima dan kirim sendiri; status belum berubah.';};
+$('waLink').onclick=e=>{if(state.hinaConfigured){openWithTakeover(e,selected,$('message').value,$('detailNotice'));}else{$('detailNotice').textContent='WhatsApp dibuka. Gateway Hina belum aktif; auto reply belum dinonaktifkan.';}};
+$('takeoverOn').onclick=()=>showHinaStatus(selected,'on');
+$('takeoverOff').onclick=()=>{if(confirm('Aktifkan kembali balasan otomatis Hina untuk kontak ini?'))showHinaStatus(selected,'off');};
 $('generate').onclick=async()=>{
  const id=selected.id, previous=$('message').value;
  $('generate').disabled=true;$('generate').textContent='Generating...';$('detailNotice').textContent='Menghubungi 9Router...';
