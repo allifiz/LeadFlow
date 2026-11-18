@@ -21,6 +21,7 @@ function syncLeadFlow() {
     if (!token || token.length < 24) throw new Error('Missing import token');
     const OWNER = (props.getProperty('LEADFLOW_OWNER_EMAIL') || '').trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(OWNER)) throw new Error('Missing owner email');
+    try { publishFinderConfig_(props, token, OWNER); } catch(e) { console.warn('Finder config sync failed: '+String(e.message||e).slice(0,100)); }
     const cutoff = Date.now() - 30 * 86400000;
     for (const [key,value] of Object.entries(props.getProperties())) {
       if (key.startsWith('done_') && Number(value) < cutoff) props.deleteProperty(key);
@@ -29,7 +30,7 @@ function syncLeadFlow() {
     let pages = 0;
     do {
       const result = Gmail.Users.Messages.list('me', {
-        labelIds:['SENT'], q:'to:'+OWNER+' subject:'+PREFIX+' newer_than:14d',
+        labelIds:['SENT'], q:'to:'+OWNER+' {subject:LEADFLOW_SYNC_V1 subject:LEADFLOW_SYNC_V2} newer_than:14d',
         maxResults:100, ...(pageToken ? {pageToken}: {})
       });
       for (const item of result.messages || []) {
@@ -40,26 +41,28 @@ function syncLeadFlow() {
           if (!(msg.labelIds || []).includes('SENT')) continue;
           const headers = Object.fromEntries((msg.payload.headers||[]).map(x=>[x.name.toLowerCase(),x.value]));
           const address = s => (String(s||'').match(/<([^<>]+)>/)?.[1]||String(s||'')).trim().toLowerCase();
-          if (address(headers.from)!==OWNER || address(headers.to)!==OWNER || !/^LEADFLOW_SYNC_V1 \d{4}-\d{2}-\d{2}$/.test(headers.subject||'')) continue;
+          if (address(headers.from)!==OWNER || address(headers.to)!==OWNER || !/^LEADFLOW_SYNC_V[12] \d{4}-\d{2}-\d{2}$/.test(headers.subject||'')) continue;
           // Let Gmail handle MIME and transfer decoding instead of decoding Base64 ourselves.
           const plain = GmailApp.getMessageById(item.id).getPlainBody();
           const payload = JSON.parse(plain.trim());
-          if (payload.version!==1 || !Array.isArray(payload.leads) || payload.leads.length>20) throw new Error('Invalid batch');
+          const v2 = /^LEADFLOW_SYNC_V2 /.test(headers.subject);
+          if (payload.version!==(v2?2:1) || !Array.isArray(payload.leads) || payload.leads.length>20 || (v2 && (typeof payload.campaign_id!=='string'||typeof payload.revision!=='string'||payload.date!==headers.subject.slice(-10)))) throw new Error('Invalid batch');
           // Never import claimed opt-in, status, secrets or other unexpected fields.
           const leads = payload.leads.map(l=>({name:l.name,phone:l.phone,email:l.email,category:l.category,location:l.location,source:l.source,priority:l.priority}));
           const headersOut = {Authorization:'Bearer '+token};
           const bypass = props.getProperty('LEADFLOW_VERCEL_BYPASS');
           if (bypass) headersOut['x-vercel-protection-bypass']=bypass;
-          const response = UrlFetchApp.fetch(LEADFLOW_ENDPOINT,{
+          const response = UrlFetchApp.fetch(v2?LEADFLOW_ENDPOINT.replace('action=import','action=finder-import'):LEADFLOW_ENDPOINT,{
             method:'post',contentType:'application/json',headers:headersOut,
-            payload:JSON.stringify({leads}),muteHttpExceptions:true,followRedirects:false
+            payload:JSON.stringify(v2?{version:2,campaign_id:payload.campaign_id,revision:payload.revision,date:payload.date,leads}:{leads}),muteHttpExceptions:true,followRedirects:false
           });
+          if (v2 && response.getResponseCode()===409) { props.setProperty(key,String(Date.now())); console.warn('Finder V2 batch rejected: campaign changed or date expired.'); continue; }
           if (response.getResponseCode()!==200) throw new Error('LeadFlow HTTP '+response.getResponseCode());
           const r=JSON.parse(response.getContentText());
-          if (!Number.isInteger(r.added)||!Number.isInteger(r.duplicates)||!Array.isArray(r.errors)||r.added+r.duplicates+r.errors.length!==leads.length) throw new Error('Unexpected response');
+          if (!Number.isInteger(r.added)||!Number.isInteger(r.duplicates)||(v2?!Number.isInteger(r.invalid)||r.added+r.duplicates+r.invalid!==leads.length:!Array.isArray(r.errors)||r.added+r.duplicates+r.errors.length!==leads.length)) throw new Error('Unexpected response');
           props.setProperty(key,String(Date.now()));
-          console.log('Batch imported: added='+r.added+' duplicates='+r.duplicates+' invalid='+r.errors.length);
-          if(r.errors.length) console.warn('Invalid rows: '+r.errors.map(x=>x.index).join(','));
+          console.log('Batch imported: added='+r.added+' duplicates='+r.duplicates+' invalid='+(v2?r.invalid:r.errors.length)+(v2?' campaign='+payload.campaign_id:''));
+          if(!v2&&r.errors.length) console.warn('Invalid rows: '+r.errors.map(x=>x.index).join(','));
         } catch(e) { console.warn('Batch not confirmed: '+String(e.message||e).slice(0,120)); }
       }
       pageToken=result.nextPageToken;
@@ -84,4 +87,21 @@ function processDraftQueue_(props,token) {
       if(result.state!=='ready')break;
     }catch(e){console.warn('Draft worker request failed');break;}
   }
+}
+
+function publishFinderConfig_(props,token,owner){
+  const headers={Authorization:'Bearer '+token};
+  const bypass=props.getProperty('LEADFLOW_VERCEL_BYPASS');
+  if(bypass)headers['x-vercel-protection-bypass']=bypass;
+  const r=UrlFetchApp.fetch(LEADFLOW_ENDPOINT.replace('action=import','action=finder-config'),{method:'get',headers,muteHttpExceptions:true,followRedirects:false});
+  if(r.getResponseCode()!==200)throw new Error('Finder config HTTP '+r.getResponseCode());
+  const config=JSON.parse(r.getContentText());
+  if(config.version!==2||!/^\d{4}-\d{2}-\d{2}$/.test(config.date)||typeof config.revision!=='string'||!Array.isArray(config.campaigns))throw new Error('Invalid Finder config');
+  const fingerprint=Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,JSON.stringify(config)));
+  if(props.getProperty('finder_config_hash')===fingerprint&&Date.now()-Number(props.getProperty('finder_config_sent_at')||0)<3600000)return;
+  // Only self-email, no tokens or customer data. Refresh even when all campaigns paused.
+  GmailApp.sendEmail(owner,'LEADFLOW_FINDER_CONFIG_V2 '+config.date,JSON.stringify({...config,published_at:new Date().toISOString()}));
+  props.setProperty('finder_config_hash',fingerprint);
+  props.setProperty('finder_config_sent_at',String(Date.now()));
+  console.log('Finder config published: '+config.campaigns.length+' active campaign(s) awaiting results');
 }
