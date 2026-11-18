@@ -11,6 +11,19 @@ const valid=(given,secret)=>{
 const query=(c,sql,args=[])=>c.execute({sql,args});
 const day=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const configured=()=>env.WA_AUTO_SEND==='true'&&!!env.WA_ACCESS_TOKEN&&/^\d+$/.test(env.WA_PHONE_NUMBER_ID??'')&&/^v\d+\.\d+$/.test(env.WA_GRAPH_VERSION??'')&&!!env.WA_TEMPLATE_NAMES?.split(',').map(x=>x.trim()).filter(x=>/^[a-z0-9_]+$/.test(x)).length;
+const hinaConfigured=()=>!!env.HINA_GATEWAY_URL&&String(env.HINA_GATEWAY_TOKEN||'').length>=32;
+async function hinaTakeover(phone,action){
+ const base=new URL(env.HINA_GATEWAY_URL);
+ if(base.protocol!=='https:'||base.username||base.password||base.search||base.hash)throw Error('Invalid gateway URL');
+ const r=await fetch(base.href.replace(/\/$/,'')+'/leadflow/takeover',{
+  method:'POST',headers:{Authorization:'Bearer '+env.HINA_GATEWAY_TOKEN,'Content-Type':'application/json'},
+  body:JSON.stringify({phone,action}),signal:AbortSignal.timeout(12000),redirect:'error'
+ });
+ if(!r.ok)throw Error('Gateway HTTP '+r.status);
+ const result=await r.json();
+ if(typeof result.takeover!=='boolean'||typeof result.connected!=='boolean')throw Error('Unexpected gateway response');
+ return result;
+}
 async function runCron(c){
  if(!configured()) return {submitted:0,reason:'WhatsApp otomatis belum diaktifkan atau env belum lengkap'};
  if((await query(c,"SELECT value FROM settings WHERE key='paused'")).rows[0]?.value!=='0') return {submitted:0,reason:'Pengiriman dijeda'};
@@ -56,7 +69,7 @@ export default {
    if(action==='list'&&request.method==='GET'){
     const rows=(await query(c,"SELECT l.*,d.message AS saved_draft,d.model AS draft_model,d.updated_at AS draft_updated_at FROM leads l LEFT JOIN lead_drafts d ON d.lead_id=l.id ORDER BY l.priority DESC,l.id DESC LIMIT 1000")).rows;
     const paused=(await query(c,"SELECT value FROM settings WHERE key='paused'")).rows[0]?.value!=='0';
-    return json({leads:rows.map(row=>({...row,draft:row.saved_draft||draft(row,day()),draft_engine:row.saved_draft?'AI':'template'})),paused,configured:configured()});
+    return json({leads:rows.map(row=>({...row,draft:row.saved_draft||draft(row,day()),draft_engine:row.saved_draft?'AI':'template'})),paused,configured:configured(),hinaConfigured:hinaConfigured()});
    }
    if(request.method!=='POST') return json({error:'Method not allowed'},405);
    const raw=await request.text();
@@ -77,6 +90,12 @@ export default {
    if(!Number.isSafeInteger(id)||id<1) return json({error:'ID tidak valid'},400);
    const lead=(await query(c,"SELECT * FROM leads WHERE id=?",[id])).rows[0];
    if(!lead) return json({error:'Lead tidak ditemukan'},404);
+   if(action==='takeover'){
+    if(!hinaConfigured())return json({error:'Gateway Hina belum dikonfigurasi'},503);
+    if(!mobileNumber(lead.phone)||!['status','on','off'].includes(body.mode))return json({error:'Nomor atau mode tidak valid'},400);
+    try{return json(await hinaTakeover(lead.phone,body.mode));}
+    catch(e){console.warn('Hina gateway',e?.name);return json({error:'Gateway Hina tidak merespons. Status takeover belum terkonfirmasi.'},502);}
+   }
    if(action==='consent'){
     const evidence=String(body.evidence??'').trim().slice(0,2000);
     if(body.confirmed!==true||evidence.length<15||!mobileNumber(lead.phone)) return json({error:'Perlu bukti persetujuan WhatsApp yang spesifik dan nomor seluler'},400);
