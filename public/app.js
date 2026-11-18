@@ -63,6 +63,13 @@ function render(){
  for(const l of visible){const tr=node('tr');const name=node('td');name.append(node('strong',l.name),node('small',[l.category,l.location].filter(Boolean).join(' · ')));if(/^https?:\/\//i.test(l.source)){const a=node('a','Sumber');a.href=l.source;a.target='_blank';a.rel='noopener noreferrer';name.append(a);}
  const phone=node('td',l.phone?'+'+l.phone:'—');if(l.wa_verified)phone.append(node('small','WA terverifikasi'));const st=node('td');st.append(node('span',label[l.status]||l.status,'pill '+l.status));if(l.opt_in_at)st.append(node('small','Opt-in tercatat'));if(l.draft_state&&l.draft_state!=='excluded')st.append(node('small',draftLabels[l.draft_state]||l.draft_state));
  const actions=node('td');const b=node('button','Detail');b.onclick=()=>open(l);actions.append(b);
+ if(canOpenWa(l)&&!l.opt_in_at){
+  const approved=node('button','Detail · sudah opt-in');
+  approved.title='Klik hanya setelah nomor diverifikasi dan kontak menyetujui penawaran website melalui WhatsApp';
+  approved.style.marginLeft='6px';
+  approved.onclick=()=>open(l,true);
+  actions.append(approved);
+ }
  if(canSendDirect(l)){
   const send=node('button','Kirim pesan','primary');
   send.style.marginLeft='6px';send.onclick=()=>sendDirect(l,l.draft,send,$('notice'));actions.append(send);
@@ -86,7 +93,11 @@ $('reload').onclick=()=>refresh().catch(e=>$('notice').textContent=e.message);
 $('draftRun').onclick=async()=>{const b=$('draftRun');b.disabled=true;b.textContent='Memproses...';try{const r=await api('draft-worker',{});await refresh();$('notice').textContent='Draft worker: '+r.state;}catch(e){$('notice').textContent=e.message;}finally{b.disabled=!state.aiConfigured;b.textContent='Proses satu draft';}};
 $('pause').onclick=async()=>{if(state.paused&&!confirm('Aktifkan pengiriman pertama otomatis hanya ke kontak dengan opt-in?'))return;try{await api('pause',{paused:!state.paused});await refresh();}catch(e){$('notice').textContent=e.message;}};
 $('import').onclick=async()=>{try{const rows=parseImport($('importData').value);if(!Array.isArray(rows)||!rows.length)throw Error('Data kosong / format tidak valid');const r=await api('import',{leads:rows});$('importResult').textContent='Ditambah '+r.added+' · Duplikat '+r.duplicates+' · Invalid '+r.errors.length;await refresh();}catch(e){$('importResult').textContent=e.message;}};
-function open(l){selected=l;$('detailName').textContent=l.name;$('detailInfo').textContent=[l.phone,l.email,label[l.status],l.last_error].filter(Boolean).join(' · ');$('message').value=l.draft;$('evidence').value=l.opt_in_evidence||'';$('confirmed').checked=false;$('detailNotice').textContent=l.draft_engine==='AI'?'Draft AI tersimpan: '+(l.draft_model||''):(draftLabels[l.draft_state]||'Draft awal: template lokal')+(l.draft_error?' · '+l.draft_error:'');$('consent').disabled=l.status!=='new';$('manual').disabled=l.status!=='new';$('generate').textContent='Generate draft';$('generate').disabled=l.status==='blocked';$('copy').disabled=l.status==='blocked';$('sendDirect').hidden=!canSendDirect(l);$('sendDirect').disabled=false;wa();$('details').showModal();showHinaStatus(l);}
+function open(l,attested=false){selected=l;$('detailName').textContent=l.name;$('detailInfo').textContent=[l.phone,l.email,label[l.status],l.last_error].filter(Boolean).join(' · ');$('message').value=l.draft;const existing=!!l.wa_verified&&!!l.opt_in_at&&!!String(l.opt_in_evidence||'').trim();
+ const prefill=attested===true&&canOpenWa(l)&&!l.opt_in_at;
+ const date=new Intl.DateTimeFormat('id-ID',{timeZone:'Asia/Jakarta',day:'numeric',month:'long',year:'numeric'}).format(new Date());
+ $('evidence').value=l.opt_in_evidence||(prefill?date+' (tanggal pencatatan). Operator mengonfirmasi nomor WA telah diverifikasi dan kontak telah memberikan persetujuan menerima penawaran website melalui WhatsApp. Metode/bukti: ':'');
+ $('confirmed').checked=existing||prefill;$('detailNotice').textContent=l.draft_engine==='AI'?'Draft AI tersimpan: '+(l.draft_model||''):(draftLabels[l.draft_state]||'Draft awal: template lokal')+(l.draft_error?' · '+l.draft_error:'');$('consent').disabled=l.status!=='new';$('manual').disabled=l.status!=='new';$('generate').textContent='Generate draft';$('generate').disabled=l.status==='blocked';$('copy').disabled=l.status==='blocked';$('sendDirect').hidden=!canSendDirect(l);$('sendDirect').disabled=false;wa();$('details').showModal();showHinaStatus(l);}
 function wa(){const available=canOpenWa(selected);$('waLink').hidden=!available;if(available){$('waLink').href=waUrl(selected,$('message').value);$('waLink').title='Buka draft di WhatsApp; belum dikirim';}}
 $('message').oninput=wa;
 $('sendDirect').onclick=()=>sendDirect(selected,$('message').value,$('sendDirect'),$('detailNotice'));
