@@ -2,10 +2,11 @@
 // Script Properties: LEADFLOW_IMPORT_TOKEN (same as Vercel IMPORT_TOKEN).
 // Optional LEADFLOW_VERCEL_BYPASS only if explicitly configured in Vercel.
 const LEADFLOW_ENDPOINT = 'https://leadflow-topaz-eta.vercel.app/api/leadflow?action=import';
-const OWNER = 'sadflix07@gmail.com';
+// Owner email is configured privately as LEADFLOW_OWNER_EMAIL.
 const PREFIX = 'LEADFLOW_SYNC_V1';
 function installLeadFlowSync() {
-  if (!PropertiesService.getScriptProperties().getProperty('LEADFLOW_IMPORT_TOKEN')) throw new Error('Set LEADFLOW_IMPORT_TOKEN first');
+  const config = PropertiesService.getScriptProperties();
+  if (!config.getProperty('LEADFLOW_IMPORT_TOKEN') || !config.getProperty('LEADFLOW_OWNER_EMAIL')) throw new Error('Set LEADFLOW_IMPORT_TOKEN and LEADFLOW_OWNER_EMAIL first');
   for (const trigger of ScriptApp.getProjectTriggers()) {
     if (trigger.getHandlerFunction() === 'syncLeadFlow') ScriptApp.deleteTrigger(trigger);
   }
@@ -18,6 +19,8 @@ function syncLeadFlow() {
     const props = PropertiesService.getScriptProperties();
     const token = props.getProperty('LEADFLOW_IMPORT_TOKEN');
     if (!token || token.length < 24) throw new Error('Missing import token');
+    const OWNER = (props.getProperty('LEADFLOW_OWNER_EMAIL') || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(OWNER)) throw new Error('Missing owner email');
     const cutoff = Date.now() - 30 * 86400000;
     for (const [key,value] of Object.entries(props.getProperties())) {
       if (key.startsWith('done_') && Number(value) < cutoff) props.deleteProperty(key);
