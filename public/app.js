@@ -8,7 +8,17 @@ const api=async(action,body)=>{
 const label={new:'Baru',sending:'Sedang mengirim',submitted:'Diajukan ke WhatsApp',unknown:'Perlu cek',manual:'Manual',blocked:'Jangan hubungi'};
 const node=(tag,text,cls)=>{const x=document.createElement(tag);if(text!=null)x.textContent=text;if(cls)x.className=cls;return x};
 const draftLabels={ready:'AI siap',pending:'Dalam antrean',generating:'Memproses',failed:'AI gagal',excluded:'Tidak dijadwalkan'};
-async function refresh(){state=await api('list');leads=state.leads;$('total').textContent=leads.length;$('fresh').textContent=leads.filter(x=>x.status==='new').length;$('sent').textContent=leads.filter(x=>x.status==='submitted').length;$('unknown').textContent=leads.filter(x=>['unknown','sending'].includes(x.status)).length;$('automationState').textContent=state.hinaConfigured?'Gateway Hina dikonfigurasi · cek status di detail kontak':'Gateway Hina belum dikonfigurasi';$('pause').textContent=state.paused?'Aktifkan antrean':'Jeda antrean';$('pause').disabled=!state.configured&&state.paused;const counts={ready:0,pending:0,generating:0,failed:0};for(const l of leads){if(Object.hasOwn(counts,l.draft_state))counts[l.draft_state]++;}$('draftQueueSummary').textContent=!state.aiConfigured?'AI belum dikonfigurasi':Object.entries(counts).map(([k,v])=>draftLabels[k]+': '+v).join(' · ');$('draftRun').disabled=!state.aiConfigured;render();}
+const categoryKey=value=>String(value??'').trim().replace(/\s+/g,' ').toLocaleLowerCase('id-ID');
+const categoryValue=lead=>categoryKey(lead.category)?'cat:'+categoryKey(lead.category):'uncategorized';
+function updateCategories(){
+ const select=$('categoryFilter'),previous=select.value,counts=new Map();
+ for(const lead of leads){const key=categoryValue(lead);const current=counts.get(key);if(current)current.count++;else counts.set(key,{label:key==='uncategorized'?'Tanpa kategori':String(lead.category).trim().replace(/\s+/g,' ').replace(/^./u,x=>x.toLocaleUpperCase('id-ID')),count:1});}
+ const all=node('option','Semua kategori');all.value='';
+ const entries=[...counts.entries()].sort((a,b)=>a[0]==='uncategorized'?1:b[0]==='uncategorized'?-1:a[1].label.localeCompare(b[1].label,'id'));
+ select.replaceChildren(all,...entries.map(([key,item])=>{const option=node('option',item.label+' ('+item.count+')');option.value=key;return option;}));
+ select.value=counts.has(previous)?previous:'';
+}
+async function refresh(){state=await api('list');leads=state.leads;updateCategories();$('total').textContent=leads.length;$('fresh').textContent=leads.filter(x=>x.status==='new').length;$('sent').textContent=leads.filter(x=>x.status==='submitted').length;$('unknown').textContent=leads.filter(x=>['unknown','sending'].includes(x.status)).length;$('automationState').textContent=state.hinaConfigured?'Gateway Hina dikonfigurasi · cek status di detail kontak':'Gateway Hina belum dikonfigurasi';$('pause').textContent=state.paused?'Aktifkan antrean':'Jeda antrean';$('pause').disabled=!state.configured&&state.paused;const counts={ready:0,pending:0,generating:0,failed:0};for(const l of leads){if(Object.hasOwn(counts,l.draft_state))counts[l.draft_state]++;}$('draftQueueSummary').textContent=!state.aiConfigured?'AI belum dikonfigurasi':Object.entries(counts).map(([k,v])=>draftLabels[k]+': '+v).join(' · ');$('draftRun').disabled=!state.aiConfigured;render();}
 // Manual click-to-chat only. Opening WhatsApp never records consent or delivery.
 function canOpenWa(l){return l?.status==='new'&&!l.blocked_at&&/^628\d{7,12}$/.test(l.phone||'');}
 function waUrl(l,message){return 'https://wa.me/'+l.phone+'?text='+encodeURIComponent(message||'');}
@@ -59,8 +69,8 @@ async function openWithTakeover(event,l,message,notice){
  }catch(e){tab.close();notice.textContent=e.message;}
 }
 function render(){
- const search=$('search').value.trim().toLowerCase(),status=$('filter').value,draftFilter=$('draftFilter').value;
- const visible=leads.filter(x=>(!status||x.status===status)&&(!draftFilter||x.draft_state===draftFilter)&&[x.name,x.phone,x.email,x.category,x.location].join(' ').toLowerCase().includes(search));
+ const search=$('search').value.trim().toLowerCase(),status=$('filter').value,draftFilter=$('draftFilter').value,categoryFilter=$('categoryFilter').value;
+ const visible=leads.filter(x=>(!status||x.status===status)&&(!draftFilter||x.draft_state===draftFilter)&&(!categoryFilter||categoryValue(x)===categoryFilter)&&[x.name,x.phone,x.email,x.category,x.location].join(' ').toLowerCase().includes(search));
  const pages=Math.max(1,Math.ceil(visible.length/pageSize));page=Math.min(Math.max(page,1),pages);
  $('rows').replaceChildren();$('empty').hidden=visible.length>0;
  $('resultCount').textContent=visible.length+' customer';
@@ -86,8 +96,8 @@ function parseImport(text){try{const parsed=JSON.parse(text);return Array.isArra
  return text.split('\n').filter(x=>x.trim().startsWith('|')).map(x=>x.trim().replace(/^\||\|$/g,'').split('|').map(clean)).filter(x=>x.length>=3&&!/calon customer|list calon|^[-:\s]+$/.test(x[0].toLowerCase())).map((x,i)=>({name:x[0],phone:x[1].replace(/\s*\(.+\)$/,''),email:(x[2].match(/[^\s@]+@[^\s@]+\.[a-z]{2,}/i)||[])[0]||'',priority:Math.max(0,100-i)}));
  }}
 $('loginForm').onsubmit=async e=>{e.preventDefault();token=$('token').value;try{await refresh();$('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;$('token').value='';}catch(e){token='';$('loginError').textContent=e.message;}};
-$('logout').onclick=()=>{token='';leads=[];state={};selected=null;page=1;$('rows').replaceChildren();$('workspace').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('loginError').textContent='';};
-const resetFilters=()=>{page=1;render();};$('search').oninput=resetFilters;$('filter').onchange=resetFilters;$('draftFilter').onchange=resetFilters;$('prevPage').onclick=()=>{page--;render();};$('nextPage').onclick=()=>{page++;render();};$('clearFilters').onclick=()=>{$('search').value='';$('filter').value='';$('draftFilter').value='';resetFilters();};
+$('logout').onclick=()=>{token='';leads=[];state={};selected=null;page=1;updateCategories();$('rows').replaceChildren();$('workspace').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('loginError').textContent='';};
+const resetFilters=()=>{page=1;render();};$('search').oninput=resetFilters;$('filter').onchange=resetFilters;$('draftFilter').onchange=resetFilters;$('categoryFilter').onchange=resetFilters;$('prevPage').onclick=()=>{page--;render();};$('nextPage').onclick=()=>{page++;render();};$('clearFilters').onclick=()=>{$('search').value='';$('filter').value='';$('draftFilter').value='';$('categoryFilter').value='';resetFilters();};
 $('reload').onclick=()=>refresh().catch(e=>$('notice').textContent=e.message);
 $('draftRun').onclick=async()=>{const b=$('draftRun');b.disabled=true;b.textContent='Memproses...';try{const r=await api('draft-worker',{});await refresh();$('notice').textContent='Draft worker: '+r.state;}catch(e){$('notice').textContent=e.message;}finally{b.disabled=!state.aiConfigured;b.textContent='Proses satu draft';}};
 $('pause').onclick=async()=>{if(state.paused&&!confirm('Aktifkan pengiriman pertama otomatis hanya ke kontak dengan opt-in?'))return;try{await api('pause',{paused:!state.paused});await refresh();}catch(e){$('notice').textContent=e.message;}};
