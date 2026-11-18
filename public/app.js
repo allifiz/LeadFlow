@@ -95,10 +95,10 @@ function parseImport(text){try{const parsed=JSON.parse(text);return Array.isArra
  const clean=s=>s.replace(/\*\*/g,'').replace(/^\d+\.\s*/,'').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1').trim();
  return text.split('\n').filter(x=>x.trim().startsWith('|')).map(x=>x.trim().replace(/^\||\|$/g,'').split('|').map(clean)).filter(x=>x.length>=3&&!/calon customer|list calon|^[-:\s]+$/.test(x[0].toLowerCase())).map((x,i)=>({name:x[0],phone:x[1].replace(/\s*\(.+\)$/,''),email:(x[2].match(/[^\s@]+@[^\s@]+\.[a-z]{2,}/i)||[])[0]||'',priority:Math.max(0,100-i)}));
  }}
-$('loginForm').onsubmit=async e=>{e.preventDefault();token=$('token').value;try{await refresh();$('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;$('token').value='';}catch(e){token='';$('loginError').textContent=e.message;}};
-$('logout').onclick=()=>{token='';leads=[];state={};selected=null;page=1;updateCategories();$('rows').replaceChildren();$('workspace').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('loginError').textContent='';};
+$('loginForm').onsubmit=async e=>{e.preventDefault();token=$('token').value;try{await refresh();$('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;$('token').value='';loadFinder();}catch(e){token='';$('loginError').textContent=e.message;}};
+$('logout').onclick=()=>{token='';leads=[];state={};selected=null;page=1;finderState=null;$('finderCards').replaceChildren();$('finderHistory').replaceChildren();if($('finderEditor').open)$('finderEditor').close();updateCategories();$('rows').replaceChildren();$('workspace').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('loginError').textContent='';};
 const resetFilters=()=>{page=1;render();};$('search').oninput=resetFilters;$('filter').onchange=resetFilters;$('draftFilter').onchange=resetFilters;$('categoryFilter').onchange=resetFilters;$('prevPage').onclick=()=>{page--;render();};$('nextPage').onclick=()=>{page++;render();};$('clearFilters').onclick=()=>{$('search').value='';$('filter').value='';$('draftFilter').value='';$('categoryFilter').value='';resetFilters();};
-$('reload').onclick=()=>refresh().catch(e=>$('notice').textContent=e.message);
+$('reload').onclick=()=>{refresh().catch(e=>$('notice').textContent=e.message);loadFinder();};
 $('draftRun').onclick=async()=>{const b=$('draftRun');b.disabled=true;b.textContent='Memproses...';try{const r=await api('draft-worker',{});await refresh();$('notice').textContent='Draft worker: '+r.state;}catch(e){$('notice').textContent=e.message;}finally{b.disabled=!state.aiConfigured;b.textContent='Proses satu draft';}};
 $('pause').onclick=async()=>{if(state.paused&&!confirm('Aktifkan pengiriman pertama otomatis hanya ke kontak dengan opt-in?'))return;try{await api('pause',{paused:!state.paused});await refresh();}catch(e){$('notice').textContent=e.message;}};
 $('import').onclick=async()=>{try{const rows=parseImport($('importData').value);if(!Array.isArray(rows)||!rows.length)throw Error('Data kosong / format tidak valid');const r=await api('import',{leads:rows});$('importResult').textContent='Ditambah '+r.added+' · Duplikat '+r.duplicates+' · Invalid '+r.errors.length;await refresh();}catch(e){$('importResult').textContent=e.message;}};
@@ -137,3 +137,52 @@ $('consent').onclick=async()=>{
 };
 $('manual').onclick=()=>{if(confirm('Tandai sudah dihubungi secara manual?'))change('manual',{});};
 $('block').onclick=()=>{if(confirm('Blokir seluruh penawaran selanjutnya untuk lead ini?'))change('block',{});};
+
+let finderState=null,editingCampaign=null;
+const fields={regions:'fRegions',districts:'fDistricts',categories:'fCategories',excluded_categories:'fExcluded',services:'fServices',sources:'fSources'};
+const lines=value=>String(value||'').split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
+function renderFinder(){
+ if(!finderState)return;
+ const active=finderState.campaigns.filter(x=>x.enabled);
+ $('finderCount').textContent=active.length+' aktif';
+ $('finderBudget').textContent='Target aktif: '+active.reduce((n,x)=>n+x.daily_limit,0)+' / 40 lead per hari';
+ $('finderCards').replaceChildren();
+ for(const c of finderState.campaigns){
+  const card=node('article',null,'campaign-card'),head=node('div',null,'campaign-head');
+  head.append(node('h3',c.name),node('span',c.enabled?'Aktif':'Pause','pill '+(c.enabled?'submitted':'')));
+  const target=node('div',null,'campaign-target');target.append(node('strong',String(c.daily_limit)),node('small','lead / hari'));
+  const tags=node('div',null,'campaign-tags');for(const cat of c.categories.length?c.categories:['Semua kategori'])tags.append(node('span',cat,'count-tag'));
+  const actions=node('div',null,'actions'),edit=node('button','Edit campaign'),toggle=node('button',c.enabled?'Pause':'Aktifkan');
+  edit.onclick=()=>openFinderEditor(c);toggle.onclick=async()=>{toggle.disabled=true;try{await persistCampaign({...c,enabled:!c.enabled});}catch(e){$('finderNotice').textContent=e.message;}finally{toggle.disabled=false;}};
+  actions.append(edit,toggle);
+  card.append(head,node('p',c.regions.join(' · '),'campaign-meta'),target,tags,node('p',c.districts.length?c.districts.join(' · '):'Semua kecamatan','campaign-meta'),actions);$('finderCards').append(card);
+ }
+ $('finderHistory').replaceChildren();
+ const history=finderState.history||[];$('finderHistoryCount').textContent=history.length;$('finderHistoryEmpty').hidden=history.length>0;
+ for(const r of history){const tr=node('tr');for(const key of ['day','campaign_name','target','found','added','duplicates','invalid'])tr.append(node('td',String(r[key]??'—')));$('finderHistory').append(tr);}
+}
+async function loadFinder(){
+ try{const next=await api('finder-studio');if(!token)return;finderState=next;renderFinder();$('finderNotice').textContent='';}
+ catch(e){$('finderNotice').textContent=e.message;}
+}
+async function persistCampaign(c){
+ if(!finderState)throw Error('Finder Studio belum dimuat');
+ const result=await api('finder-save',{revision:finderState.revision,campaign:c});
+ finderState={...finderState,...result};renderFinder();$('finderNotice').textContent='Campaign tersimpan. Sinkronisasi Gmail mengikuti trigger Apps Script.';
+}
+function openFinderEditor(c){
+ if(!finderState){$('finderNotice').textContent='Segarkan Finder Studio dulu.';return;}
+ editingCampaign=c?.id||null;
+ $('finderEditorTitle').textContent=c?'Edit campaign':'Campaign baru';
+ $('fName').value=c?.name||'';$('fEnabled').checked=c?.enabled??false;
+ for(const [key,id] of Object.entries(fields))$(''+id).value=(c?.[key]|| (key==='services'?['Landing page','Company profile']:key==='sources'?['Website publik','Direktori bisnis']:[])).join('\n');
+ $('fLimit').value=c?.daily_limit??10;$('fPriority').value=c?.minimum_priority??50;$('fWebsite').value=c?.website_status||'any';$('fContact').value=c?.contact||'either';$('fInstruction').value=c?.instruction||'';
+ $('finderEditorNotice').textContent='';$('finderEditor').showModal();$('finderEditor').querySelector('.drawer-body').scrollTop=0;
+}
+$('finderReload').onclick=loadFinder;$('finderNew').onclick=()=>openFinderEditor(null);
+$('finderForm').onsubmit=async e=>{
+ e.preventDefault();const button=$('finderSave');button.disabled=true;
+ const c={...(editingCampaign?{id:editingCampaign}:{}),name:$('fName').value,enabled:$('fEnabled').checked,daily_limit:Number($('fLimit').value),minimum_priority:Number($('fPriority').value),website_status:$('fWebsite').value,contact:$('fContact').value,instruction:$('fInstruction').value};
+ for(const [key,id] of Object.entries(fields))c[key]=lines($(id).value);
+ try{await persistCampaign(c);$('finderEditor').close();}catch(e){$('finderEditorNotice').textContent=e.message;}finally{button.disabled=false;}
+};
