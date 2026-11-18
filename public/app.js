@@ -139,8 +139,103 @@ $('manual').onclick=()=>{if(confirm('Tandai sudah dihubungi secara manual?'))cha
 $('block').onclick=()=>{if(confirm('Blokir seluruh penawaran selanjutnya untuk lead ini?'))change('block',{});};
 
 let finderState=null,editingCampaign=null;
-const fields={regions:'fRegions',districts:'fDistricts',categories:'fCategories',excluded_categories:'fExcluded',services:'fServices',sources:'fSources'};
-const lines=value=>String(value||'').split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
+const choicePresets={
+ fCategories:['Sekolah','Pendidikan','Bimbingan belajar','Klinik','Klinik gigi','Kesehatan','Wedding','Event organizer','Restoran','Kafe','Hotel','Travel','Rental mobil','Properti','Kontraktor','Arsitektur','Retail','UMKM','Jasa profesional','Bengkel'],
+ fServices:['Landing page','Company profile','Website sekolah','Website katalog','Website toko online','Website booking','Redesign website','Maintenance website'],
+ fSources:['Website publik','Media sosial bisnis','Direktori bisnis','Google Maps'],
+ fWebsite:[['any','Semua kondisi'],['no_website','Belum punya website'],['needs_improvement','Perlu peningkatan'],['no_or_weak','Belum punya / perlu peningkatan']],
+ fContact:[['either','WA atau email'],['whatsapp','WhatsApp'],['email','Email'],['both','WA dan email']],
+ fInstruction:[['','Tanpa preferensi khusus'],['Prioritaskan bisnis lokal dan calon pelanggan yang relevan.','Bisnis lokal'],['Prioritaskan bisnis independen dan UMKM lokal.','UMKM independen'],['Prioritaskan bisnis aktif dengan kontak publik yang mudah diverifikasi.','Kontak mudah diverifikasi'],['Prioritaskan bisnis dengan kebutuhan website yang paling jelas dan relevan.','Kebutuhan website tinggi'],['Prioritaskan sekolah swasta dan lembaga pendidikan lokal.','Sekolah swasta & lembaga pendidikan']]
+};
+const regionMemo=new Map();
+let regionEdit=null,regionSeq=0;
+const normScope=v=>String(v||'').trim().replace(/\s+/g,' ').toLocaleLowerCase('id-ID');
+function drawChoices(id,selected,multi,extras=[]){
+ const picked=multi?(Array.isArray(selected)?selected:[]):[selected??''];
+ let options=choicePresets[id].map(x=>Array.isArray(x)?x:[x,x]);
+ const seen=new Set(options.map(x=>normScope(x[0])));
+ for(const item of [...picked,...extras]){
+  if(item&& !seen.has(normScope(item))){options.push([item,item]);seen.add(normScope(item));}
+ }
+ const host=$(id);host.replaceChildren();
+ for(const [value,text] of options){
+  const label=node('label',null,'choice-option'),input=node('input');input.type=multi?'checkbox':'radio';input.name=id;input.value=value;input.checked=picked.some(x=>normScope(x)===normScope(value));label.append(input,node('span',text));host.append(label);
+ }
+}
+function readChoices(id,multi=false){
+ const values=Array.from($(id).querySelectorAll('input:checked')).map(x=>x.value);
+ return multi?values:(values[0]??'');
+}
+async function getRegions(level,parent=''){
+ const key=level+':'+parent;if(regionMemo.has(key))return regionMemo.get(key);
+ const result=await api('finder-regions&level='+encodeURIComponent(level)+(parent?'&parent='+encodeURIComponent(parent):''));
+ if(!Array.isArray(result.data)||!result.data.length)throw Error('Daftar wilayah kosong');
+ regionMemo.set(key,result.data);return result.data;
+}
+function regionOptions(id,rows,placeholder,all=false){
+ const select=$(id),first=node('option',placeholder);first.value=all?'all':'';
+ select.replaceChildren(first,...rows.map(x=>{const option=node('option',x.name);option.value=x.code;return option;}));select.value=first.value;
+}
+function choiceName(id){const select=$(id);return select.options[select.selectedIndex]?.text||'';}
+function regionMessage(text='',error=false){$('fRegionNotice').textContent=text;$('fRegionRetry').hidden=!error;}
+function updateRegionReady(){
+ const ready=regionEdit&&(!regionEdit.dirty&&regionEdit.original||!regionEdit.loading&&$('fProvince').value&&$('fRegency').value&&$('fDistrict').value);
+ $('finderSave').disabled=!ready;
+}
+function resetDistrict(){ $('fDistrictFields').hidden=true;regionOptions('fDistrict',[],'Semua kecamatan',true); }
+function displayRegencies(){
+ const type=$('fRegionType').value;const list=(regionEdit?.regencies||[]).filter(x=>type==='all'||(type==='city'?/^kota\b/i.test(x.name):/^kabupaten\b/i.test(x.name)));
+ regionOptions('fRegency',list,'Pilih kabupaten / kota');resetDistrict();
+}
+async function loadDistrict(regency,desired=''){
+ const edit=regionEdit,seq=++regionSeq;resetDistrict();if(!regency){edit.loading=false;updateRegionReady();return;}
+ edit.loading=true;updateRegionReady();regionMessage('Memuat kecamatan…');
+ try{
+  const rows=await getRegions('districts',regency);if(regionEdit!==edit||seq!==regionSeq)return;
+  regionOptions('fDistrict',rows,'Semua kecamatan',true);
+  if(desired&&rows.some(x=>x.code===desired))$('fDistrict').value=desired;
+  $('fDistrictFields').hidden=false;regionMessage();
+ }catch(e){if(regionEdit===edit&&seq===regionSeq){regionMessage(e.message,true);$('fDistrict').value='';}}
+ finally{if(regionEdit===edit&&seq===regionSeq){edit.loading=false;updateRegionReady();}}
+}
+async function loadRegencies(province,desiredName='',desiredDistrict=''){
+ const edit=regionEdit,seq=++regionSeq;edit.regencies=[];displayRegencies();$('fRegencyFields').hidden=!province;
+ if(!province){edit.loading=false;updateRegionReady();return;}
+ edit.loading=true;updateRegionReady();regionMessage('Memuat kabupaten / kota…');
+ try{
+  const rows=await getRegions('regencies',province);if(regionEdit!==edit||seq!==regionSeq)return;
+  edit.regencies=rows;displayRegencies();regionMessage();
+  const match=rows.find(x=>normScope(x.name)===normScope(desiredName));
+  if(match){$('fRegency').value=match.code;await loadDistrict(match.code);if(regionEdit===edit&&desiredDistrict){const options=Array.from($('fDistrict').options);const district=options.find(x=>normScope(x.text)===normScope(desiredDistrict));if(district)$('fDistrict').value=district.value;}}
+ }catch(e){if(regionEdit===edit&&seq===regionSeq)regionMessage(e.message,true);}
+ finally{if(regionEdit===edit&&seq===regionSeq){edit.loading=false;updateRegionReady();}}
+}
+async function initRegions(c){
+ const edit={original:c?{regions:c.regions||[],districts:c.districts||[]}:null,dirty:!c,loading:true,regencies:[]};regionEdit=edit;const seq=++regionSeq;
+ $('fSavedRegion').hidden=!c;$('fSavedRegionText').textContent=c?[c.regions.join(' · '),c.districts.length?c.districts.join(' · '):'Semua kecamatan'].join(' / '):'';
+ $('fRegionType').value='all';regionOptions('fProvince',[],'Pilih provinsi');$('fRegencyFields').hidden=true;resetDistrict();regionMessage('Memuat provinsi…');updateRegionReady();
+ try{
+  const provinces=await getRegions('provinces');if(regionEdit!==edit||seq!==regionSeq)return;
+  regionOptions('fProvince',provinces,'Pilih provinsi');regionMessage();
+  if(c?.regions?.length===1){
+   const parts=c.regions[0].split(',').map(x=>x.trim());const province=provinces.find(x=>normScope(x.name)===normScope(parts.at(-1)));
+   if(province){$('fProvince').value=province.code;await loadRegencies(province.code,parts[0],c.districts.length===1?c.districts[0]:'');}
+  }
+ }catch(e){if(regionEdit===edit&&seq===regionSeq)regionMessage(e.message,true);}
+ finally{if(regionEdit===edit&&seq===regionSeq){edit.loading=false;updateRegionReady();}}
+}
+function markRegion(){if(regionEdit){regionEdit.dirty=true;updateRegionReady();}}
+$('fProvince').onchange=()=>{markRegion();$('fRegionType').value='all';loadRegencies($('fProvince').value);};
+$('fRegionType').onchange=()=>{regionSeq++;markRegion();if(regionEdit)regionEdit.loading=false;displayRegencies();regionMessage();updateRegionReady();};
+$('fRegency').onchange=()=>{markRegion();loadDistrict($('fRegency').value);};
+$('fDistrict').onchange=markRegion;
+$('fKeepRegion').onclick=()=>{if(regionEdit?.original){regionEdit.dirty=false;regionMessage('Wilayah tersimpan akan tetap digunakan kecuali pilihan diubah.');updateRegionReady();}};
+$('fRegionRetry').onclick=()=>{const province=$('fProvince').value,regency=$('fRegency').value;if(regency)loadDistrict(regency);else if(province)loadRegencies(province);else initRegions(finderState?.campaigns.find(c=>c.id===editingCampaign));};
+function selectedScope(){
+ if(regionEdit?.original&&!regionEdit.dirty)return regionEdit.original;
+ if(!regionEdit||regionEdit.loading||!$('fProvince').value||!$('fRegency').value||!$('fDistrict').value)throw Error('Pilih provinsi, kabupaten/kota, dan kecamatan terlebih dahulu.');
+ return {regions:[choiceName('fRegency')+', '+choiceName('fProvince')],districts:$('fDistrict').value==='all'?[]:[choiceName('fDistrict')]};
+}
 function renderFinder(){
  if(!finderState)return;
  const active=finderState.campaigns.filter(x=>x.enabled);
@@ -175,14 +270,22 @@ function openFinderEditor(c){
  editingCampaign=c?.id||null;
  $('finderEditorTitle').textContent=c?'Edit campaign':'Campaign baru';
  $('fName').value=c?.name||'';$('fEnabled').checked=c?.enabled??false;
- for(const [key,id] of Object.entries(fields))$(''+id).value=(c?.[key]|| (key==='services'?['Landing page','Company profile']:key==='sources'?['Website publik','Direktori bisnis']:[])).join('\n');
- $('fLimit').value=c?.daily_limit??10;$('fPriority').value=c?.minimum_priority??50;$('fWebsite').value=c?.website_status||'any';$('fContact').value=c?.contact||'either';$('fInstruction').value=c?.instruction||'';
- $('finderEditorNotice').textContent='';$('finderEditor').showModal();$('finderEditor').querySelector('.drawer-body').scrollTop=0;
+ drawChoices('fCategories',c?.categories||[],true,[...new Set(leads.map(x=>x.category).filter(Boolean))]);
+ drawChoices('fServices',c?.services||['Landing page','Company profile'],true);
+ drawChoices('fSources',c?.sources||['Website publik','Direktori bisnis'],true);
+ drawChoices('fWebsite',c?.website_status||'any',false);
+ drawChoices('fContact',c?.contact||'either',false);
+ drawChoices('fInstruction',c?.instruction||'',false);
+ $('fLimit').value=c?.daily_limit??10;$('fPriority').value=c?.minimum_priority??50;
+ $('finderEditorNotice').textContent='';$('finderEditor').showModal();$('finderEditor').querySelector('.drawer-body').scrollTop=0;initRegions(c);
 }
 $('finderReload').onclick=loadFinder;$('finderNew').onclick=()=>openFinderEditor(null);
 $('finderForm').onsubmit=async e=>{
  e.preventDefault();const button=$('finderSave');button.disabled=true;
- const c={...(editingCampaign?{id:editingCampaign}:{}),name:$('fName').value,enabled:$('fEnabled').checked,daily_limit:Number($('fLimit').value),minimum_priority:Number($('fPriority').value),website_status:$('fWebsite').value,contact:$('fContact').value,instruction:$('fInstruction').value};
- for(const [key,id] of Object.entries(fields))c[key]=lines($(id).value);
- try{await persistCampaign(c);$('finderEditor').close();}catch(e){$('finderEditorNotice').textContent=e.message;}finally{button.disabled=false;}
+ try{
+  const c={...(editingCampaign?{id:editingCampaign}:{}),name:$('fName').value,enabled:$('fEnabled').checked,daily_limit:Number($('fLimit').value),minimum_priority:Number($('fPriority').value),website_status:readChoices('fWebsite'),contact:readChoices('fContact'),instruction:readChoices('fInstruction'),categories:readChoices('fCategories',true),services:readChoices('fServices',true),sources:readChoices('fSources',true),excluded_categories:[],...selectedScope()};
+  if(!c.services.length)throw Error('Pilih minimal satu jenis jasa.');
+  if(c.categories.length>20)throw Error('Pilih maksimal 20 kategori bisnis.');
+  await persistCampaign(c);$('finderEditor').close();
+ }catch(e){$('finderEditorNotice').textContent=e.message;}finally{updateRegionReady();}
 };
