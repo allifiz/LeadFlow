@@ -4,12 +4,27 @@ const api=async(action,body)=>{
  const r=await fetch('/api/leadflow?action='+action,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
  const result=await r.json();if(!r.ok)throw Error(result.error||'Request gagal');return result;
 };
-const label={new:'Baru',sending:'Sedang mengirim',submitted:'Diajukan ke Meta',unknown:'Perlu cek',manual:'Manual',blocked:'Jangan hubungi'};
+const label={new:'Baru',sending:'Sedang mengirim',submitted:'Diajukan ke WhatsApp',unknown:'Perlu cek',manual:'Manual',blocked:'Jangan hubungi'};
 const node=(tag,text,cls)=>{const x=document.createElement(tag);if(text!=null)x.textContent=text;if(cls)x.className=cls;return x};
-async function refresh(){state=await api('list');leads=state.leads;$('total').textContent=leads.length;$('fresh').textContent=leads.filter(x=>x.status==='new').length;$('sent').textContent=leads.filter(x=>x.status==='submitted').length;$('unknown').textContent=leads.filter(x=>['unknown','sending'].includes(x.status)).length;$('automationState').textContent=!state.configured?'Belum dikonfigurasi di Vercel':state.paused?'Dijeda':'Aktif untuk lead yang memiliki opt-in';$('pause').textContent=state.paused?'Aktifkan antrean':'Jeda antrean';$('pause').disabled=!state.configured&&state.paused;render();}
+async function refresh(){state=await api('list');leads=state.leads;$('total').textContent=leads.length;$('fresh').textContent=leads.filter(x=>x.status==='new').length;$('sent').textContent=leads.filter(x=>x.status==='submitted').length;$('unknown').textContent=leads.filter(x=>['unknown','sending'].includes(x.status)).length;$('automationState').textContent=state.hinaConfigured?'Gateway Hina dikonfigurasi · cek status di detail kontak':'Gateway Hina belum dikonfigurasi';$('pause').textContent=state.paused?'Aktifkan antrean':'Jeda antrean';$('pause').disabled=!state.configured&&state.paused;render();}
 // Manual click-to-chat only. Opening WhatsApp never records consent or delivery.
 function canOpenWa(l){return l?.status==='new'&&!l.blocked_at&&/^628\d{7,12}$/.test(l.phone||'');}
 function waUrl(l,message){return 'https://wa.me/'+l.phone+'?text='+encodeURIComponent(message||'');}
+function canSendDirect(l){return canOpenWa(l)&&state.hinaConfigured&&!!l.wa_verified&&!!l.opt_in_at&&!!String(l.opt_in_evidence||'').trim();}
+async function sendDirect(l,message,button,notice){
+ const text=String(message||'').trim();
+ if(!canSendDirect(l)){notice.textContent='Perlu persetujuan penerima yang tercatat.';return;}
+ if(!text||text.length>2000){notice.textContent='Pesan harus berisi 1-2000 karakter.';return;}
+ if(!confirm('Kirim pesan berikut ke '+l.name+' melalui WhatsApp Hina? Human Takeover akan diaktifkan.\n\n'+text))return;
+ button.disabled=true;notice.textContent='Mengirim melalui Hina...';
+ let outcome;
+ try{await api('send-hina',{id:l.id,message:text,confirmed:true});outcome='Pesan diajukan ke WhatsApp. Human takeover aktif; cek chat untuk status pengantaran.';}
+ catch(e){outcome=e.message;}
+ try{await refresh();}catch{}
+ if($('details').open&&selected?.id===l.id){const latest=leads.find(x=>x.id===l.id);if(latest){selected=latest;$('sendDirect').hidden=!canSendDirect(latest);$('manual').disabled=latest.status!=='new';wa();showHinaStatus(latest);}}
+ notice.textContent=outcome;
+ button.disabled=false;
+}
 function canTakeover(l){return state.hinaConfigured&&/^628\d{7,12}$/.test(l?.phone||'');}
 async function toggleTakeover(l,mode){
  return api('takeover',{id:l.id,mode});
@@ -47,8 +62,11 @@ function render(){
  for(const l of visible){const tr=node('tr');const name=node('td');name.append(node('strong',l.name),node('small',[l.category,l.location].filter(Boolean).join(' · ')));if(/^https?:\/\//i.test(l.source)){const a=node('a','Sumber');a.href=l.source;a.target='_blank';a.rel='noopener noreferrer';name.append(a);}
  const phone=node('td',l.phone?'+'+l.phone:'—');if(l.wa_verified)phone.append(node('small','WA terverifikasi'));const st=node('td');st.append(node('span',label[l.status]||l.status,'pill '+l.status));if(l.opt_in_at)st.append(node('small','Opt-in tercatat'));
  const actions=node('td');const b=node('button','Detail');b.onclick=()=>open(l);actions.append(b);
- if(canOpenWa(l)){
-  const send=node('a','Kirim pesan','button');
+ if(canSendDirect(l)){
+  const send=node('button','Kirim pesan','primary');
+  send.style.marginLeft='6px';send.onclick=()=>sendDirect(l,l.draft,send,$('notice'));actions.append(send);
+ }else if(canOpenWa(l)){
+  const send=node('a','Buka WA','button');
   send.href=waUrl(l,l.draft);send.target='_blank';send.rel='noopener noreferrer';send.style.display='inline-block';send.style.marginLeft='6px';
   send.title='Buka WhatsApp dengan draft; periksa izin penerima dan tekan Kirim di WhatsApp.';
   send.onclick=e=>{if(state.hinaConfigured){openWithTakeover(e,l,l.draft,$('notice'));}else{$('notice').textContent='WhatsApp dibuka. Gateway Hina belum aktif; auto reply belum dinonaktifkan.';}};
@@ -66,9 +84,10 @@ $('search').oninput=render;$('filter').onchange=render;
 $('reload').onclick=()=>refresh().catch(e=>$('notice').textContent=e.message);
 $('pause').onclick=async()=>{if(state.paused&&!confirm('Aktifkan pengiriman pertama otomatis hanya ke kontak dengan opt-in?'))return;try{await api('pause',{paused:!state.paused});await refresh();}catch(e){$('notice').textContent=e.message;}};
 $('import').onclick=async()=>{try{const rows=parseImport($('importData').value);if(!Array.isArray(rows)||!rows.length)throw Error('Data kosong / format tidak valid');const r=await api('import',{leads:rows});$('importResult').textContent='Ditambah '+r.added+' · Duplikat '+r.duplicates+' · Invalid '+r.errors.length;await refresh();}catch(e){$('importResult').textContent=e.message;}};
-function open(l){selected=l;$('detailName').textContent=l.name;$('detailInfo').textContent=[l.phone,l.email,label[l.status],l.last_error].filter(Boolean).join(' · ');$('message').value=l.draft;$('evidence').value=l.opt_in_evidence||'';$('confirmed').checked=false;$('detailNotice').textContent=l.draft_engine==='AI'?'Draft AI tersimpan: '+(l.draft_model||''):'Draft awal: template lokal';$('consent').disabled=l.status!=='new';$('manual').disabled=l.status!=='new';$('generate').textContent='Generate draft';$('generate').disabled=l.status==='blocked';$('copy').disabled=l.status==='blocked';wa();$('details').showModal();showHinaStatus(l);}
+function open(l){selected=l;$('detailName').textContent=l.name;$('detailInfo').textContent=[l.phone,l.email,label[l.status],l.last_error].filter(Boolean).join(' · ');$('message').value=l.draft;$('evidence').value=l.opt_in_evidence||'';$('confirmed').checked=false;$('detailNotice').textContent=l.draft_engine==='AI'?'Draft AI tersimpan: '+(l.draft_model||''):'Draft awal: template lokal';$('consent').disabled=l.status!=='new';$('manual').disabled=l.status!=='new';$('generate').textContent='Generate draft';$('generate').disabled=l.status==='blocked';$('copy').disabled=l.status==='blocked';$('sendDirect').hidden=!canSendDirect(l);$('sendDirect').disabled=false;wa();$('details').showModal();showHinaStatus(l);}
 function wa(){const available=canOpenWa(selected);$('waLink').hidden=!available;if(available){$('waLink').href=waUrl(selected,$('message').value);$('waLink').title='Buka draft di WhatsApp; belum dikirim';}}
 $('message').oninput=wa;
+$('sendDirect').onclick=()=>sendDirect(selected,$('message').value,$('sendDirect'),$('detailNotice'));
 $('waLink').onclick=e=>{if(state.hinaConfigured){openWithTakeover(e,selected,$('message').value,$('detailNotice'));}else{$('detailNotice').textContent='WhatsApp dibuka. Gateway Hina belum aktif; auto reply belum dinonaktifkan.';}};
 $('takeoverOn').onclick=()=>showHinaStatus(selected,'on');
 $('takeoverOff').onclick=()=>{if(confirm('Aktifkan kembali balasan otomatis Hina untuk kontak ini?'))showHinaStatus(selected,'off');};
