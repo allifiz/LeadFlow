@@ -41,7 +41,8 @@ function syncLeadFlow() {
           const headers = Object.fromEntries((msg.payload.headers||[]).map(x=>[x.name.toLowerCase(),x.value]));
           const address = s => (String(s||'').match(/<([^<>]+)>/)?.[1]||String(s||'')).trim().toLowerCase();
           if (address(headers.from)!==OWNER || address(headers.to)!==OWNER || !/^LEADFLOW_SYNC_V1 \d{4}-\d{2}-\d{2}$/.test(headers.subject||'')) continue;
-          const plain = findPlain(msg.payload);
+          // Let Gmail handle MIME and transfer decoding instead of decoding Base64 ourselves.
+          const plain = GmailApp.getMessageById(item.id).getPlainBody();
           const payload = JSON.parse(plain.trim());
           if (payload.version!==1 || !Array.isArray(payload.leads) || payload.leads.length>20) throw new Error('Invalid batch');
           // Never import claimed opt-in, status, secrets or other unexpected fields.
@@ -64,29 +65,4 @@ function syncLeadFlow() {
       pageToken=result.nextPageToken;
     } while(pageToken && ++pages<3);
   } finally {lock.releaseLock();}
-}
-function findPlain(part) {
-  if (part.mimeType === 'text/plain' && part.body?.data) {
-    const raw = String(part.body.data).trim();
-    // Some wrappers expose an already-decoded JSON body.
-    if (raw.startsWith('{')) return raw;
-    // Accept both URL-safe and standard base64, with or without padding.
-    const encoded = raw.replace(/\s/g, '')
-      .replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
-    if (!/^[A-Za-z0-9+/]+$/.test(encoded) || encoded.length % 4 === 1) {
-      throw new Error('Invalid Gmail body encoding');
-    }
-    const padded = encoded + '='.repeat((4 - encoded.length % 4) % 4);
-    try {
-      return Utilities.newBlob(Utilities.base64Decode(padded))
-        .getDataAsString('UTF-8');
-    } catch (e) {
-      throw new Error('Gmail base64 decode failed');
-    }
-  }
-  for (const child of part.parts || []) {
-    const s = findPlain(child);
-    if (s) return s;
-  }
-  return '';
 }
