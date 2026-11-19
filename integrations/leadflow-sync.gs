@@ -100,8 +100,13 @@ function publishFinderConfig_(props,token,owner){
   const config=JSON.parse(r.getContentText());
   if(config.version!==2||!/^\d{4}-\d{2}-\d{2}$/.test(config.date)||typeof config.revision!=='string'||!Array.isArray(config.campaigns))throw new Error('Invalid Finder config');
   const fingerprint=Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,JSON.stringify(config)));
-  if(props.getProperty('finder_config_hash')===fingerprint&&Date.now()-Number(props.getProperty('finder_config_sent_at')||0)<3600000)return;
-  // Only self-email, no tokens or customer data. Refresh even when all campaigns paused.
+  // The API payload contains date, revision, batch size and remaining quotas, but no publication timestamp.
+  // Publish only when that payload changes; the same-day config remains valid for GPT Finder.
+  if(props.getProperty('finder_config_hash')===fingerprint){
+    console.log('Finder config unchanged; publication skipped');
+    return;
+  }
+  // Only self-email, no tokens or customer data. Publish the transition to zero campaigns once.
   GmailApp.sendEmail(owner,'LEADFLOW_FINDER_CONFIG_V2 '+config.date,JSON.stringify({...config,published_at:new Date().toISOString()}));
   props.setProperty('finder_config_hash',fingerprint);
   props.setProperty('finder_config_sent_at',String(Date.now()));
