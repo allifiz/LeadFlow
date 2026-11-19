@@ -1,6 +1,7 @@
 import {finderConfig,studio,saveCampaign,saveBatchSize,importCampaign} from '../lib/finder.js';
 import {timingSafeEqual} from 'node:crypto';
 import {ready} from '../lib/db.js';
+import {manualChannel} from '../lib/lead-metadata.js';
 import {runDraftQueue,withDraftLock,aiConfigured} from '../lib/draft-queue.js';
 import {normalizeLead,mobileNumber,draft,eligible,templatePayload,composeAiDraft} from '../lib/core.js';
 const env=process.env;
@@ -52,7 +53,7 @@ async function sendWithHina(c,lead,body){
   if(!r.ok||result.ok!==true||result.takeover!==true||typeof result.providerId!=='string'||!result.providerId)throw Error('Unconfirmed dispatch');
   await c.batch([
    {sql:"UPDATE attempts SET state='submitted',provider_id=? WHERE lead_id=?",args:[result.providerId,id]},
-   {sql:"UPDATE leads SET status=CASE WHEN blocked_at IS NULL THEN 'submitted' ELSE 'blocked' END,provider_id=?,last_error=NULL WHERE id=?",args:[result.providerId,id]}
+   {sql:"UPDATE leads SET status=CASE WHEN blocked_at IS NULL THEN 'submitted' ELSE 'blocked' END,provider_id=?,last_error=NULL,contacted_at=CURRENT_TIMESTAMP,contact_channel='whatsapp' WHERE id=?",args:[result.providerId,id]}
   ],'write');
   return json({ok:true,takeover:true,status:'submitted'});
  }catch(e){
@@ -168,9 +169,13 @@ export default {
    if(action==='finder-config'&&request.method==='GET')return json(await finderConfig(c,url.searchParams.get('mode')==='batch',Number(url.searchParams.get('max_batch'))));
    if(action==='finder-studio'&&request.method==='GET')return json(await studio(c));
    if(action==='list'&&request.method==='GET'){
-    const rows=(await query(c,"SELECT l.*,d.message AS saved_draft,d.model AS draft_model,d.updated_at AS draft_updated_at,j.state AS job_state,j.attempts AS draft_attempts,j.last_error AS draft_error,j.updated_at AS job_updated_at FROM leads l LEFT JOIN lead_drafts d ON d.lead_id=l.id LEFT JOIN draft_jobs j ON j.lead_id=l.id ORDER BY l.priority DESC,l.id DESC LIMIT 1000")).rows;
+    const paged=url.searchParams.has('cursor'),cursor=Number(url.searchParams.get('cursor')||0);
+    if(paged&&(!Number.isSafeInteger(cursor)||cursor<0))return json({error:'Cursor tidak valid'},400);
+    const rows=(await query(c,"SELECT l.*,a.created_at AS attempt_at,a.state AS attempt_state,d.message AS saved_draft,d.model AS draft_model,d.updated_at AS draft_updated_at,j.state AS job_state,j.attempts AS draft_attempts,j.last_error AS draft_error,j.updated_at AS job_updated_at FROM leads l LEFT JOIN attempts a ON a.lead_id=l.id LEFT JOIN lead_drafts d ON d.lead_id=l.id LEFT JOIN draft_jobs j ON j.lead_id=l.id "+(paged?"WHERE l.id>? ORDER BY l.id LIMIT 251":"ORDER BY l.priority DESC,l.id DESC LIMIT 1000"),paged?[cursor]:[])).rows;
+    const next_cursor=paged&&rows.length>250?Number(rows[249].id):null;
+    if(next_cursor!==null)rows.pop();
     const paused=(await query(c,"SELECT value FROM settings WHERE key='paused'")).rows[0]?.value!=='0';
-    return json({leads:rows.map(row=>({...row,draft:row.saved_draft||draft(row,day()),draft_engine:row.saved_draft?'AI':'template',draft_state:row.saved_draft?'ready':row.status!=='new'?'excluded':row.job_state==='generating'&&Date.now()-Number(row.job_updated_at)<90000?'generating':Number(row.draft_attempts)>=3?'failed':'pending'})),paused,configured:configured(),hinaConfigured:hinaConfigured(),aiConfigured:aiConfigured()});
+    return json({next_cursor,leads:rows.map(row=>({...row,draft:row.saved_draft||draft(row,day()),draft_engine:row.saved_draft?'AI':'template',draft_state:row.saved_draft?'ready':row.status!=='new'?'excluded':row.job_state==='generating'&&Date.now()-Number(row.job_updated_at)<90000?'generating':Number(row.draft_attempts)>=3?'failed':'pending'})),paused,configured:configured(),hinaConfigured:hinaConfigured(),aiConfigured:aiConfigured()});
    }
    if(request.method!=='POST') return json({error:'Method not allowed'},405);
    const raw=await request.text();
@@ -205,12 +210,12 @@ export default {
    if(action==='consent'){
     const evidence=String(body.evidence??'').trim().slice(0,2000);
     if(body.confirmed!==true||evidence.length<15||!mobileNumber(lead.phone)) return json({error:'Perlu bukti persetujuan WhatsApp yang spesifik dan nomor seluler'},400);
-    const r=await query(c,"UPDATE leads SET opt_in_at=CURRENT_TIMESTAMP,opt_in_evidence=?,wa_verified=1 WHERE id=? AND status='new' AND blocked_at IS NULL",[evidence,id]);
+    const r=await query(c,"UPDATE leads SET opt_in_at=CURRENT_TIMESTAMP,opt_in_evidence=?,wa_verified=1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='new' AND blocked_at IS NULL",[evidence,id]);
     return r.rowsAffected?json({ok:true}):json({error:'Lead sudah ditangani/diblokir'},409);
    }
-   if(action==='block'){await query(c,"UPDATE leads SET blocked_at=CURRENT_TIMESTAMP,status='blocked',opt_in_at=NULL,opt_in_evidence=NULL WHERE id=?",[id]);return json({ok:true});}
+   if(action==='block'){await query(c,"UPDATE leads SET blocked_at=CURRENT_TIMESTAMP,status='blocked',opt_in_at=NULL,opt_in_evidence=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",[id]);return json({ok:true});}
    if(action==='manual'){
-    const r=await query(c,"UPDATE leads SET status='manual' WHERE id=? AND status='new' AND NOT EXISTS(SELECT 1 FROM attempts WHERE lead_id=?)",[id,id]);
+    const r=await query(c,"UPDATE leads SET status='manual',contacted_at=CURRENT_TIMESTAMP,contact_channel=? WHERE id=? AND status='new' AND NOT EXISTS(SELECT 1 FROM attempts WHERE lead_id=?)",[manualChannel(body.channel),id,id]);
     return r.rowsAffected?json({ok:true}):json({error:'Sudah ditangani'},409);
    }
    if(action==='draft'){

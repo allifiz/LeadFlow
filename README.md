@@ -29,3 +29,6 @@ Deploy backend first. It creates an additive `finder_batches` table, preserving 
 
 ## Finder V4.2 dynamic batch size
 Finder Studio offers 5 or 10 candidates per batch, default 10. Backend enforces configured size and daily remaining; configuration changes rotate revision. The batch config endpoint advertises at most 5 to older GAS callers; the updated script opts in with `max_batch=10`. Replace active GAS script and run syncLeadFlow to publish the new config. The V4.2 scheduler accepts either size and sends one batch per run. Existing tables and wire protocol 3 are unchanged. Never send outreach automatically.
+
+## Customer workspace
+Customer queue, history and delivery review are separate hash-routed pages. Queue groups by Jakarta intake date and recorded batch; defaults to today, with older/all tabs. History includes submitted (not delivery confirmed), manually contacted, and blocked records; pending/unknown dispatch is isolated for review. Additive metadata migration leaves old unknown timestamps and attribution null; legacy WhatsApp attempts are shown as attempt times. New Finder imports record campaign/batch on actual insertion only. Admin list pagination supports all rows via cursor; UI auto-refreshes while visible and logged in. Opening history details only reads Hina status. No change to consent or outbound sending rules.

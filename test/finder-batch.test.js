@@ -7,7 +7,7 @@ function setup(limit=6){
  db.exec(`CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
  CREATE TABLE finder_runs(campaign_id TEXT,campaign_name TEXT,day TEXT,revision TEXT,target INTEGER,found INTEGER,added INTEGER DEFAULT 0,duplicates INTEGER DEFAULT 0,invalid INTEGER DEFAULT 0,nonce TEXT UNIQUE,created_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(campaign_id,day));
  CREATE TABLE finder_batches(batch_id TEXT PRIMARY KEY,campaign_id TEXT,day TEXT,revision TEXT,payload_hash TEXT,found INTEGER,added INTEGER DEFAULT 0,invalid INTEGER DEFAULT 0,duplicates INTEGER DEFAULT 0,nonce TEXT UNIQUE,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
- CREATE TABLE leads(name TEXT,name_key TEXT UNIQUE,phone TEXT UNIQUE,email TEXT UNIQUE,category TEXT,location TEXT,source TEXT,priority INTEGER);`);
+ CREATE TABLE leads(name TEXT,name_key TEXT UNIQUE,phone TEXT UNIQUE,email TEXT UNIQUE,category TEXT,location TEXT,source TEXT,priority INTEGER,campaign_id TEXT,campaign_name TEXT,batch_id TEXT);`);
  const config={revision:'test-rev',campaigns:[{...blankCampaign,id:'demo',daily_limit:limit}]};
  db.prepare("INSERT INTO settings VALUES ('finder_config',?)").run(JSON.stringify(config));
  const execute=({sql,args=[]})=>{const stmt=db.prepare(sql);return /^SELECT/i.test(sql)?{rows:stmt.all(...args)}:{rows:[],rowsAffected:Number(stmt.run(...args).changes)}};
@@ -29,7 +29,7 @@ test('multiple batches, replay, capacity, duplicates and invalid rows',async()=>
  r=await importCampaign(c,body('three',[lead(6)]));assert.equal(r.status,200);
  assert.equal((await finderConfig(c,true)).campaigns.length,0);
  const h=(await studio(c)).history[0];assert.equal(h.added,6);assert.equal(h.found,8);assert.equal(h.duplicates,1);assert.equal(h.invalid,1);assert.equal(h.batches,3);
- assert.equal(db.prepare('SELECT COUNT(*) n FROM leads').get().n,6);db.close();
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM leads').get().n,6);assert.equal(db.prepare("SELECT COUNT(*) n FROM leads WHERE campaign_id='demo' AND batch_id=?").get(first.batch_id).n,2);db.close();
 });
 test('legacy V2 import stays compatible and contributes to V3 remaining',async()=>{
  const {db,c,lead,body}=setup();
