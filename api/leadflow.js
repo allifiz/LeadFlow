@@ -1,4 +1,4 @@
-import {finderConfig,studio,saveCampaign,importCampaign} from '../lib/finder.js';
+import {finderConfig,studio,saveCampaign,saveBatchSize,importCampaign} from '../lib/finder.js';
 import {timingSafeEqual} from 'node:crypto';
 import {ready} from '../lib/db.js';
 import {runDraftQueue,withDraftLock,aiConfigured} from '../lib/draft-queue.js';
@@ -165,7 +165,7 @@ export default {
   try{
    if(action==='finder-regions'&&request.method==='GET')return finderRegions(url);
    const c=await ready();
-   if(action==='finder-config'&&request.method==='GET')return json(await finderConfig(c,url.searchParams.get('mode')==='batch'));
+   if(action==='finder-config'&&request.method==='GET')return json(await finderConfig(c,url.searchParams.get('mode')==='batch',Number(url.searchParams.get('max_batch'))));
    if(action==='finder-studio'&&request.method==='GET')return json(await studio(c));
    if(action==='list'&&request.method==='GET'){
     const rows=(await query(c,"SELECT l.*,d.message AS saved_draft,d.model AS draft_model,d.updated_at AS draft_updated_at,j.state AS job_state,j.attempts AS draft_attempts,j.last_error AS draft_error,j.updated_at AS job_updated_at FROM leads l LEFT JOIN lead_drafts d ON d.lead_id=l.id LEFT JOIN draft_jobs j ON j.lead_id=l.id ORDER BY l.priority DESC,l.id DESC LIMIT 1000")).rows;
@@ -177,6 +177,7 @@ export default {
    if(raw.length>250000) return json({error:'Payload terlalu besar'},413);
    let body;try{body=JSON.parse(raw);}catch{return json({error:'JSON tidak valid'},400);}
    if(action==='finder-save')return saveCampaign(c,body);
+    if(action==='finder-batch-size')return saveBatchSize(c,body);
    if(action==='finder-import')return importCampaign(c,body);
    if(action==='draft-worker')return json(await runDraftQueue(c,generateDraft));
    if(action==='import'){

@@ -47,7 +47,7 @@ function syncLeadFlow() {
           const payload = JSON.parse(plain.trim());
           const version=Number(headers.subject.match(/^LEADFLOW_SYNC_V([123]) /)[1]);
           const finder=version>=2;
-          if (payload.version!==version || !Array.isArray(payload.leads) || payload.leads.length>(version===3?5:20) || (finder && (typeof payload.campaign_id!=='string'||typeof payload.revision!=='string'||payload.date!==headers.subject.slice(-10))) || (version===3 && (typeof payload.batch_id!=='string'||!(/^[A-Za-z0-9_-]{16,100}$/).test(payload.batch_id)))) throw new Error('Invalid batch');
+          if (payload.version!==version || !Array.isArray(payload.leads) || payload.leads.length>(version===3?10:20) || (finder && (typeof payload.campaign_id!=='string'||typeof payload.revision!=='string'||payload.date!==headers.subject.slice(-10))) || (version===3 && (typeof payload.batch_id!=='string'||!(/^[A-Za-z0-9_-]{16,100}$/).test(payload.batch_id)))) throw new Error('Invalid batch');
           // Never import claimed opt-in, status, secrets or other unexpected fields.
           const leads = payload.leads.map(l=>({name:l.name,phone:l.phone,email:l.email,category:l.category,location:l.location,source:l.source,priority:l.priority}));
           const headersOut = {Authorization:'Bearer '+token};
@@ -95,7 +95,7 @@ function publishFinderConfig_(props,token,owner){
   const headers={Authorization:'Bearer '+token};
   const bypass=props.getProperty('LEADFLOW_VERCEL_BYPASS');
   if(bypass)headers['x-vercel-protection-bypass']=bypass;
-  const r=UrlFetchApp.fetch(LEADFLOW_ENDPOINT.replace('action=import','action=finder-config&mode=batch'),{method:'get',headers,muteHttpExceptions:true,followRedirects:false});
+  const r=UrlFetchApp.fetch(LEADFLOW_ENDPOINT.replace('action=import','action=finder-config&mode=batch&max_batch=10'),{method:'get',headers,muteHttpExceptions:true,followRedirects:false});
   if(r.getResponseCode()!==200)throw new Error('Finder config HTTP '+r.getResponseCode());
   const config=JSON.parse(r.getContentText());
   if(config.version!==2||!/^\d{4}-\d{2}-\d{2}$/.test(config.date)||typeof config.revision!=='string'||!Array.isArray(config.campaigns))throw new Error('Invalid Finder config');

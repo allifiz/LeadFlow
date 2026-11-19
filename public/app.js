@@ -244,6 +244,7 @@ function renderFinder(){
  const active=finderState.campaigns.filter(x=>x.enabled);
  $('finderCount').textContent=active.length+' aktif';
  $('finderBudget').textContent='Target aktif: '+active.reduce((n,x)=>n+x.daily_limit,0)+' / 40 lead per hari';
+ $('finderBatchSize').value=String(finderState.batch_size??10);$('finderBatchSize').disabled=false;
  $('finderCards').replaceChildren();
  for(const c of finderState.campaigns){
   const card=node('article',null,'campaign-card'),head=node('div',null,'campaign-head');
@@ -267,6 +268,14 @@ async function loadFinder(){
  try{const next=await api('finder-studio');if(!token)return;finderState=next;renderFinder();$('finderNotice').textContent='';}
  catch(e){$('finderNotice').textContent=e.message;}
 }
+$('finderBatchSize').onchange=async()=>{
+ if(!finderState)return;
+ const input=$('finderBatchSize'),size=Number(input.value);input.disabled=true;
+ try{const result=await api('finder-batch-size',{revision:finderState.revision,batch_size:size});
+ finderState={...finderState,...result};renderFinder();$('finderNotice').textContent='Ukuran batch tersimpan. Berlaku setelah sinkronisasi Gmail; GAS terbaru diperlukan untuk 10 lead.';}
+ catch(e){input.value=String(finderState.batch_size??10);$('finderNotice').textContent=e.message;}
+ finally{input.disabled=false;}
+};
 async function persistCampaign(c){
  if(!finderState)throw Error('Finder Studio belum dimuat');
  const result=await api('finder-save',{revision:finderState.revision,campaign:c});
