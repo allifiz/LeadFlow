@@ -249,15 +249,19 @@ function renderFinder(){
   const card=node('article',null,'campaign-card'),head=node('div',null,'campaign-head');
   head.append(node('h3',c.name),node('span',c.enabled?'Aktif':'Pause','pill '+(c.enabled?'submitted':'')));
   const target=node('div',null,'campaign-target');target.append(node('strong',String(c.daily_limit)),node('small','lead / hari'));
+  const progress=(finderState.progress||[]).find(r=>r.campaign_id===c.id)||{};
+  const added=Number(progress.added||0),remaining=Math.max(0,c.daily_limit-added);
+  const meter=node('progress');meter.max=c.daily_limit;meter.value=Math.min(added,c.daily_limit);meter.setAttribute('aria-label','Progress '+c.name);meter.className='finder-progress';
+  const progressText=node('p',added+' / '+c.daily_limit+' lead baru · '+remaining+' tersisa · '+Number(progress.batches||0)+' batch V3','campaign-meta');
   const tags=node('div',null,'campaign-tags');for(const cat of c.categories.length?c.categories:['Semua kategori'])tags.append(node('span',cat,'count-tag'));
   const actions=node('div',null,'actions'),edit=node('button','Edit campaign'),toggle=node('button',c.enabled?'Pause':'Aktifkan');
   edit.onclick=()=>openFinderEditor(c);toggle.onclick=async()=>{toggle.disabled=true;try{await persistCampaign({...c,enabled:!c.enabled});}catch(e){$('finderNotice').textContent=e.message;}finally{toggle.disabled=false;}};
   actions.append(edit,toggle);
-  card.append(head,node('p',c.regions.join(' · '),'campaign-meta'),target,tags,node('p',c.districts.length?c.districts.join(' · '):'Semua kecamatan','campaign-meta'),actions);$('finderCards').append(card);
+  card.append(head,node('p',c.regions.join(' · '),'campaign-meta'),target,meter,progressText,tags,node('p',c.districts.length?c.districts.join(' · '):'Semua kecamatan','campaign-meta'),actions);$('finderCards').append(card);
  }
  $('finderHistory').replaceChildren();
  const history=finderState.history||[];$('finderHistoryCount').textContent=history.length;$('finderHistoryEmpty').hidden=history.length>0;
- for(const r of history){const tr=node('tr');for(const key of ['day','campaign_name','target','found','added','duplicates','invalid'])tr.append(node('td',String(r[key]??'—')));$('finderHistory').append(tr);}
+ for(const r of history){const tr=node('tr');for(const key of ['day','campaign_name','target','found','added','duplicates','invalid','batches'])tr.append(node('td',String(r[key]??'—')));$('finderHistory').append(tr);}
 }
 async function loadFinder(){
  try{const next=await api('finder-studio');if(!token)return;finderState=next;renderFinder();$('finderNotice').textContent='';}
