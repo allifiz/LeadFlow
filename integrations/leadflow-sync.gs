@@ -30,7 +30,7 @@ function syncLeadFlow() {
     let pages = 0;
     do {
       const result = Gmail.Users.Messages.list('me', {
-        labelIds:['SENT'], q:'to:'+OWNER+' {subject:LEADFLOW_SYNC_V1 subject:LEADFLOW_SYNC_V2} newer_than:14d',
+        labelIds:['SENT'], q:'to:'+OWNER+' {subject:LEADFLOW_SYNC_V1 subject:LEADFLOW_SYNC_V2 subject:LEADFLOW_SYNC_V3} newer_than:14d',
         maxResults:100, ...(pageToken ? {pageToken}: {})
       });
       for (const item of result.messages || []) {
@@ -41,29 +41,30 @@ function syncLeadFlow() {
           if (!(msg.labelIds || []).includes('SENT')) continue;
           const headers = Object.fromEntries((msg.payload.headers||[]).map(x=>[x.name.toLowerCase(),x.value]));
           const address = s => (String(s||'').match(/<([^<>]+)>/)?.[1]||String(s||'')).trim().toLowerCase();
-          if (address(headers.from)!==OWNER || address(headers.to)!==OWNER || !/^LEADFLOW_SYNC_V[12] \d{4}-\d{2}-\d{2}$/.test(headers.subject||'')) continue;
+          if (address(headers.from)!==OWNER || address(headers.to)!==OWNER || !/^LEADFLOW_SYNC_V[123] \d{4}-\d{2}-\d{2}$/.test(headers.subject||'')) continue;
           // Let Gmail handle MIME and transfer decoding instead of decoding Base64 ourselves.
           const plain = GmailApp.getMessageById(item.id).getPlainBody();
           const payload = JSON.parse(plain.trim());
-          const v2 = /^LEADFLOW_SYNC_V2 /.test(headers.subject);
-          if (payload.version!==(v2?2:1) || !Array.isArray(payload.leads) || payload.leads.length>20 || (v2 && (typeof payload.campaign_id!=='string'||typeof payload.revision!=='string'||payload.date!==headers.subject.slice(-10)))) throw new Error('Invalid batch');
+          const version=Number(headers.subject.match(/^LEADFLOW_SYNC_V([123]) /)[1]);
+          const finder=version>=2;
+          if (payload.version!==version || !Array.isArray(payload.leads) || payload.leads.length>(version===3?5:20) || (finder && (typeof payload.campaign_id!=='string'||typeof payload.revision!=='string'||payload.date!==headers.subject.slice(-10))) || (version===3 && (typeof payload.batch_id!=='string'||!(/^[A-Za-z0-9_-]{16,100}$/).test(payload.batch_id)))) throw new Error('Invalid batch');
           // Never import claimed opt-in, status, secrets or other unexpected fields.
           const leads = payload.leads.map(l=>({name:l.name,phone:l.phone,email:l.email,category:l.category,location:l.location,source:l.source,priority:l.priority}));
           const headersOut = {Authorization:'Bearer '+token};
           const bypass = props.getProperty('LEADFLOW_VERCEL_BYPASS');
           if (bypass) headersOut['x-vercel-protection-bypass']=bypass;
-          const response = UrlFetchApp.fetch(v2?LEADFLOW_ENDPOINT.replace('action=import','action=finder-import'):LEADFLOW_ENDPOINT,{
+          const response = UrlFetchApp.fetch(finder?LEADFLOW_ENDPOINT.replace('action=import','action=finder-import'):LEADFLOW_ENDPOINT,{
             method:'post',contentType:'application/json',headers:headersOut,
-            payload:JSON.stringify(v2?{version:2,campaign_id:payload.campaign_id,revision:payload.revision,date:payload.date,leads}:{leads}),muteHttpExceptions:true,followRedirects:false
+            payload:JSON.stringify(finder?{version,campaign_id:payload.campaign_id,revision:payload.revision,date:payload.date,...(version===3?{batch_id:payload.batch_id}:{}),leads}:{leads}),muteHttpExceptions:true,followRedirects:false
           });
-          if (v2 && response.getResponseCode()===409) { props.setProperty(key,String(Date.now())); console.warn('Finder V2 batch rejected: campaign changed or date expired.'); continue; }
+          if (finder && response.getResponseCode()===409) { props.setProperty(key,String(Date.now())); console.warn('Finder V'+version+' batch rejected (409), campaign='+payload.campaign_id+' batch='+(payload.batch_id||'legacy')+' — refresh config; not imported.'); continue; }
           if (response.getResponseCode()!==200) throw new Error('LeadFlow HTTP '+response.getResponseCode());
           const r=JSON.parse(response.getContentText());
-          if (v2 && r.replayed===true) { props.setProperty(key,String(Date.now())); console.log('Finder V2: campaign already imported for this date'); continue; }
-          if (!Number.isInteger(r.added)||!Number.isInteger(r.duplicates)||(v2?!Number.isInteger(r.invalid)||r.added+r.duplicates+r.invalid!==leads.length:!Array.isArray(r.errors)||r.added+r.duplicates+r.errors.length!==leads.length)) throw new Error('Unexpected response');
+          if (finder && r.replayed===true) { props.setProperty(key,String(Date.now())); console.log('Finder: batch already imported'); continue; }
+          if (!Number.isInteger(r.added)||!Number.isInteger(r.duplicates)||(finder?!Number.isInteger(r.invalid)||r.added+r.duplicates+r.invalid!==leads.length:!Array.isArray(r.errors)||r.added+r.duplicates+r.errors.length!==leads.length)) throw new Error('Unexpected response');
           props.setProperty(key,String(Date.now()));
-          console.log('Batch imported: added='+r.added+' duplicates='+r.duplicates+' invalid='+(v2?r.invalid:r.errors.length)+(v2?' campaign='+payload.campaign_id:''));
-          if(!v2&&r.errors.length) console.warn('Invalid rows: '+r.errors.map(x=>x.index).join(','));
+          console.log('Batch imported: added='+r.added+' duplicates='+r.duplicates+' invalid='+(finder?r.invalid:r.errors.length)+(finder?' campaign='+payload.campaign_id:''));
+          if(!finder&&r.errors.length) console.warn('Invalid rows: '+r.errors.map(x=>x.index).join(','));
         } catch(e) { console.warn('Batch not confirmed: '+String(e.message||e).slice(0,120)); }
       }
       pageToken=result.nextPageToken;
@@ -94,7 +95,7 @@ function publishFinderConfig_(props,token,owner){
   const headers={Authorization:'Bearer '+token};
   const bypass=props.getProperty('LEADFLOW_VERCEL_BYPASS');
   if(bypass)headers['x-vercel-protection-bypass']=bypass;
-  const r=UrlFetchApp.fetch(LEADFLOW_ENDPOINT.replace('action=import','action=finder-config'),{method:'get',headers,muteHttpExceptions:true,followRedirects:false});
+  const r=UrlFetchApp.fetch(LEADFLOW_ENDPOINT.replace('action=import','action=finder-config&mode=batch'),{method:'get',headers,muteHttpExceptions:true,followRedirects:false});
   if(r.getResponseCode()!==200)throw new Error('Finder config HTTP '+r.getResponseCode());
   const config=JSON.parse(r.getContentText());
   if(config.version!==2||!/^\d{4}-\d{2}-\d{2}$/.test(config.date)||typeof config.revision!=='string'||!Array.isArray(config.campaigns))throw new Error('Invalid Finder config');

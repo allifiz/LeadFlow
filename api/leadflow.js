@@ -165,7 +165,7 @@ export default {
   try{
    if(action==='finder-regions'&&request.method==='GET')return finderRegions(url);
    const c=await ready();
-   if(action==='finder-config'&&request.method==='GET')return json(await finderConfig(c));
+   if(action==='finder-config'&&request.method==='GET')return json(await finderConfig(c,url.searchParams.get('mode')==='batch'));
    if(action==='finder-studio'&&request.method==='GET')return json(await studio(c));
    if(action==='list'&&request.method==='GET'){
     const rows=(await query(c,"SELECT l.*,d.message AS saved_draft,d.model AS draft_model,d.updated_at AS draft_updated_at,j.state AS job_state,j.attempts AS draft_attempts,j.last_error AS draft_error,j.updated_at AS job_updated_at FROM leads l LEFT JOIN lead_drafts d ON d.lead_id=l.id LEFT JOIN draft_jobs j ON j.lead_id=l.id ORDER BY l.priority DESC,l.id DESC LIMIT 1000")).rows;
