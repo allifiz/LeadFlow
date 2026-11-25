@@ -33,7 +33,7 @@ export function initProposalStudio({api,getLeads,isAuthenticated}){
   card.append(actions);
   if(['completed','approved','failed'].includes(p.state)){
    const d=el('details'),summary=el('summary','Buat versi revisi'),f=el('form'),label=el('label','Instruksi revisi'),input=el('textarea');input.rows=3;input.maxLength=3000;input.required=true;input.placeholder='Contoh: sesuaikan harga, fitur dan gaya cover...';label.append(input);const submit=el('button','Generate revisi','primary');f.append(label,submit);d.append(summary,f);card.append(d);
-   f.onsubmit=async e=>{e.preventDefault();submit.disabled=true;try{const r=await api('proposal-revise',{id:p.id,revision:input.value});setNotice(r.notified?'Revisi dikirim ke bridge.':'Revisi tersimpan; bridge belum merespons.');await load();}catch(e){setNotice(e.message);}finally{submit.disabled=false;}};
+   f.onsubmit=async e=>{e.preventDefault();submit.disabled=true;try{const r=await api('proposal-revise',{id:p.id,revision:input.value});d.open=false;setNotice(r.notified?'Revisi dikirim ke bridge.':'Revisi tersimpan; bridge belum merespons.');await load();}catch(e){setNotice(e.message);}finally{submit.disabled=false;}};
   }
   return card;
  }
