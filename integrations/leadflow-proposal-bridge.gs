@@ -55,15 +55,17 @@ function doPost(e){
   try{publish_(cfg,body.request_id);return output_({ok:true});}finally{lock.releaseLock();}
  }catch(e){console.warn('Proposal webhook failed: '+String(e.message||e).slice(0,100));return output_({ok:false});}
 }
-function result_(cfg,id){
+function result_(cfg,id,req){
  const msgs=sent_(cfg,RES+' '+id);
  if(!msgs.length)return null;
  for(const m of msgs.reverse()){
   let r;try{r=JSON.parse(m.getPlainBody().trim());}catch{continue;}
   if(r.version!==1||r.request_id!==id)continue;
   if(r.state==='failed')return {version:1,request_id:id,state:'failed',error:String(r.error||'GPT failed').slice(0,500)};
-  if(r.state!=='completed'||!(/^[A-Za-z0-9_-]{15,150}$/).test(r.document_id||'')||typeof r.title!=='string'||!r.title.trim()||typeof r.summary!=='string'||!r.summary.trim())continue;
-  const doc=DriveApp.getFileById(r.document_id);
+  if(r.state!=='completed'||typeof r.title!=='string'||!r.title.trim()||typeof r.summary!=='string'||!r.summary.trim())continue;
+  const isV2=r.format==='template-v2';
+  if(!isV2&&!(/^[A-Za-z0-9_-]{15,150}$/).test(r.document_id||''))continue;
+  const doc=isV2?renderTemplate_(cfg,id,req,r):DriveApp.getFileById(r.document_id);
   if(doc.getMimeType()!==MimeType.GOOGLE_DOCS||doc.getOwner()?.getEmail().toLowerCase()!==cfg.owner||!doc.getName().includes(id))throw Error('Invalid proposal document ownership or name');
   const folder=DriveApp.getFolderById(cfg.folder);
   if(folder.getSharingAccess()!==DriveApp.Access.PRIVATE)throw Error('Proposal folder must be private');
@@ -82,10 +84,10 @@ function pollProposalResults(){
    const id=key.slice(PENDING.length);if(!uuid_(id))continue;
    try{
     const pending=api_(cfg,'proposal-pending&id='+encodeURIComponent(id));
-    if(!pending.requests.length){cfg.p.deleteProperty(key);cfg.p.deleteProperty(SENT+id);continue;}
-    const found=result_(cfg,id);
-    if(found){api_(cfg,'proposal-result',found);cfg.p.deleteProperty(key);cfg.p.deleteProperty(SENT+id);continue;}
-    if(Date.now()-Number(started)>48*3600000){api_(cfg,'proposal-result',{version:1,request_id:id,state:'failed',error:'Tidak ada hasil GPT dalam 48 jam. Buat revisi untuk mencoba lagi.'});cfg.p.deleteProperty(key);cfg.p.deleteProperty(SENT+id);continue;}
+    if(!pending.requests.length){cfg.p.deleteProperty(key);cfg.p.deleteProperty(SENT+id);cfg.p.deleteProperty('proposal_rendered_'+id);continue;}
+    const found=result_(cfg,id,pending.requests[0]);
+    if(found){api_(cfg,'proposal-result',found);cfg.p.deleteProperty(key);cfg.p.deleteProperty(SENT+id);cfg.p.deleteProperty('proposal_rendered_'+id);continue;}
+    if(Date.now()-Number(started)>48*3600000){api_(cfg,'proposal-result',{version:1,request_id:id,state:'failed',error:'Tidak ada hasil GPT dalam 48 jam. Buat revisi untuk mencoba lagi.'});cfg.p.deleteProperty(key);cfg.p.deleteProperty(SENT+id);cfg.p.deleteProperty('proposal_rendered_'+id);continue;}
     publish_(cfg,id);
    }catch(e){console.warn('Proposal pending: '+id+' '+String(e.message||e).slice(0,100));}
   }
@@ -97,4 +99,57 @@ function authorizeProposalBridge(){
  const cfg=config_();
  GmailApp.getAliases();DriveApp.getFolderById(cfg.folder).getName();ScriptApp.getProjectTriggers();
  console.log('Proposal bridge configuration read; deploy web app and test through LeadFlow.');
+}
+
+
+// V2: GPT returns content, GAS owns the layout. The old document_id result remains supported.
+function templateFields_(req,r){
+ const p=req.proposal,c=r.content;
+ if(!c||typeof c!=='object')throw Error('V2 content missing');
+ const safe=(s,max,key)=>{if(typeof s!=='string'||!s.trim()||s.length>max||/[{}]/.test(s))throw Error('Invalid V2 field: '+key);return s.trim();};
+ const v=(k,n)=>safe(c[k],n,k);
+ const budget=Number(p.budget),duration=Number(p.duration);
+ if(!Number.isSafeInteger(budget)||budget<0||!Number.isSafeInteger(duration)||duration<1)throw Error('Invalid commercial brief');
+ const money='Rp'+String(budget).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+ return {PROJECT_TITLE:safe(p.project,160,'project'),CUSTOMER:safe(p.customer,160,'customer'),INVESTMENT:money,DURATION:duration+' hari',DATE:Utilities.formatDate(new Date(),'Asia/Jakarta','dd/MM/yyyy'),REFERENCE:req.request_id.slice(0,8).toUpperCase(),
+ CONTEXT:v('context',500),SOLUTION:v('solution',550),OUTCOMES:v('outcomes',450),SCOPE:v('scope',1800),BOUNDARIES:v('boundaries',550),TIMELINE:v('timeline',850),DEPENDENCIES:v('dependencies',450),PAYMENT:v('payment',650),REFERENCES:v('references',1200),NEXT_STEPS:v('next_steps',450)};
+}
+function renderTemplate_(cfg,id,req,r){
+ const values=templateFields_(req,r);
+ const templateId=cfg.p.getProperty('PROPOSAL_TEMPLATE_ID')||'';
+ if(!/^[A-Za-z0-9_-]{15,150}$/.test(templateId))throw Error('Configure PROPOSAL_TEMPLATE_ID');
+ const master=DriveApp.getFileById(templateId),folder=DriveApp.getFolderById(cfg.folder);
+ if(master.getMimeType()!==MimeType.GOOGLE_DOCS||master.getOwner()?.getEmail().toLowerCase()!==cfg.owner||master.getSharingAccess()!==DriveApp.Access.PRIVATE||folder.getSharingAccess()!==DriveApp.Access.PRIVATE)throw Error('Template or folder must be private and owned by bridge account');
+ const title='Sangkara Karya - Proposal V2 - '+id,existing=folder.getFilesByName(title);
+ // Reuse only a finished copy, never edit the master or a previous proposal.
+ const done=cfg.p.getProperty('proposal_rendered_'+id);
+ if(done){const ready=DriveApp.getFileById(done);if(ready.getName()===title&&!ready.isTrashed())return ready;throw Error('Rendered document missing');}
+ let copy=null;
+ try{
+  while(existing.hasNext()){const orphan=existing.next();if(orphan.getMimeType()===MimeType.GOOGLE_DOCS&&orphan.getOwner()?.getEmail().toLowerCase()===cfg.owner)orphan.setTrashed(true);}
+  copy=master.makeCopy(title,folder);
+  const doc=DocumentApp.openById(copy.getId()),body=doc.getBody();
+  for(const [k,value] of Object.entries(values)){
+   const pattern='\\{\\{'+k+'\\}\\}',count=(body.getText().match(new RegExp(pattern,'g'))||[]).length;
+   if(!count)throw Error('Missing master placeholder: '+k);
+   // Literal replacement, preserving the placeholder character attributes.
+   for(let i=0;i<count;i++){
+    const match=body.findText(pattern);if(!match)throw Error('Placeholder lookup failed: '+k);
+    const t=match.getElement().asText(),start=match.getStartOffset(),end=match.getEndOffsetInclusive(),attrs=t.getAttributes(start);
+    t.insertText(start,value);t.deleteText(start+value.length,end+value.length);t.setAttributes(start,start+value.length-1,attrs);
+   }
+  }
+  if(/\{\{[A-Z_]+\}\}/.test(body.getText()))throw Error('Unresolved master placeholders');
+  doc.saveAndClose();
+  cfg.p.setProperty('proposal_rendered_'+id,copy.getId());
+  return copy;
+ }catch(e){if(copy)copy.setTrashed(true);throw e;}
+}
+function authorizeProposalTemplate(){
+ const cfg=config_(),id=cfg.p.getProperty('PROPOSAL_TEMPLATE_ID')||'';
+ const file=DriveApp.getFileById(id);
+ if(file.getMimeType()!==MimeType.GOOGLE_DOCS||file.getOwner()?.getEmail().toLowerCase()!==cfg.owner||file.getSharingAccess()!==DriveApp.Access.PRIVATE)throw Error('Master template must be a private Google Doc owned by bridge account');
+ const body=DocumentApp.openById(id).getBody();
+ if(!body.getText().includes('{{PROJECT_TITLE}}'))throw Error('Master template placeholders missing');
+ console.log('Proposal Template V2 authorized; no proposal created.');
 }
