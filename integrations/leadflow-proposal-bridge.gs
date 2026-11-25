@@ -1,7 +1,7 @@
 // Deploy as a NEW standalone Apps Script Web App, execute as owner.
 // Script Properties: PROPOSAL_ENDPOINT, PROPOSAL_BRIDGE_TOKEN, PROPOSAL_WEBHOOK_SECRET,
 // PROPOSAL_OWNER_EMAIL, PROPOSAL_FOLDER_ID (private Drive folder); optional PROPOSAL_VERCEL_BYPASS.
-const REQ='LEADFLOW_PROPOSAL_REQUEST_V1', RES='LEADFLOW_PROPOSAL_RESULT_V1', PENDING='proposal_pending_';
+const REQ='LEADFLOW_PROPOSAL_REQUEST_V1', RES='LEADFLOW_PROPOSAL_RESULT_V1', PENDING='proposal_pending_', SENT='proposal_sent_';
 const uuid_=v=>typeof v==='string'&&/^[a-f0-9-]{36}$/.test(v);
 function config_(){
  const p=PropertiesService.getScriptProperties(),get=k=>p.getProperty(k)||'';
@@ -38,7 +38,10 @@ function publish_(cfg,id){
  const key=PENDING+id,subject=REQ+' '+id;
  if(!cfg.p.getProperty(key))cfg.p.setProperty(key,String(Date.now()));
  ensureTrigger_();
- if(!sent_(cfg,subject).length)GmailApp.sendEmail(cfg.owner,subject,JSON.stringify(found.requests[0]));
+ if(!cfg.p.getProperty(SENT+id)){
+  if(!sent_(cfg,subject).length)GmailApp.sendEmail(cfg.owner,subject,JSON.stringify(found.requests[0]));
+  cfg.p.setProperty(SENT+id,'1');
+ }
  api_(cfg,'proposal-published',{request_id:id});
 }
 function doPost(e){
@@ -79,10 +82,10 @@ function pollProposalResults(){
    const id=key.slice(PENDING.length);if(!uuid_(id))continue;
    try{
     const pending=api_(cfg,'proposal-pending&id='+encodeURIComponent(id));
-    if(!pending.requests.length){cfg.p.deleteProperty(key);continue;}
+    if(!pending.requests.length){cfg.p.deleteProperty(key);cfg.p.deleteProperty(SENT+id);continue;}
     const found=result_(cfg,id);
-    if(found){api_(cfg,'proposal-result',found);cfg.p.deleteProperty(key);continue;}
-    if(Date.now()-Number(started)>48*3600000){api_(cfg,'proposal-result',{version:1,request_id:id,state:'failed',error:'Tidak ada hasil GPT dalam 48 jam. Buat revisi untuk mencoba lagi.'});cfg.p.deleteProperty(key);continue;}
+    if(found){api_(cfg,'proposal-result',found);cfg.p.deleteProperty(key);cfg.p.deleteProperty(SENT+id);continue;}
+    if(Date.now()-Number(started)>48*3600000){api_(cfg,'proposal-result',{version:1,request_id:id,state:'failed',error:'Tidak ada hasil GPT dalam 48 jam. Buat revisi untuk mencoba lagi.'});cfg.p.deleteProperty(key);cfg.p.deleteProperty(SENT+id);continue;}
     publish_(cfg,id);
    }catch(e){console.warn('Proposal pending: '+id+' '+String(e.message||e).slice(0,100));}
   }
