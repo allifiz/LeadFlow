@@ -4,7 +4,7 @@ import {timingSafeEqual} from 'node:crypto';
 import {ready} from '../lib/db.js';
 import {manualChannel} from '../lib/lead-metadata.js';
 import {runDraftQueue,withDraftLock,aiConfigured} from '../lib/draft-queue.js';
-import {normalizeLead,mobileNumber,draft,eligible,templatePayload,composeAiDraft,brandedSavedDraft,BRAND_NAME} from '../lib/core.js';
+import {normalizeLead,mobileNumber,draft,eligible,templatePayload,composeAiDraft,brandedSavedDraft} from '../lib/core.js';
 const env=process.env;
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
 const valid=(given,secret)=>{
@@ -157,13 +157,13 @@ async function finderRegions(url){
 export default {
  async fetch(request){
   const url=new URL(request.url), action=url.searchParams.get('action')||'list', auth=request.headers.get('authorization');
-  const admin=valid(auth,env.ADMIN_TOKEN), importer=valid(auth,env.IMPORT_TOKEN), cron=valid(auth,env.CRON_SECRET);
+  const admin=valid(auth,env.ADMIN_TOKEN), importer=valid(auth,env.IMPORT_TOKEN), cron=valid(auth,env.CRON_SECRET), proposalBridge=valid(auth,env.PROPOSAL_BRIDGE_TOKEN);
   if(action==='health'&&request.method==='GET') return json({ok:true});
   if(action==='cron'){
    if(request.method!=='GET'||!cron) return json({error:'Unauthorized'},401);
    try{return json(await runCron(await ready()));}catch(e){console.error('cron',e?.name);return json({error:'Cron gagal; cek konfigurasi dan log'},500);}
   }
-  if(!admin&&!(['import','draft-worker','finder-config','finder-import',...proposalBridgeActions].includes(action)&&importer)) return json({error:'Unauthorized atau ADMIN_TOKEN belum diatur (minimal 24 karakter)'},401);
+  if(!admin&&!(proposalBridgeActions.includes(action)&&proposalBridge)&&!(['import','draft-worker','finder-config','finder-import'].includes(action)&&importer)) return json({error:'Unauthorized atau ADMIN_TOKEN belum diatur (minimal 24 karakter)'},401);
   try{
    if(action==='finder-regions'&&request.method==='GET')return finderRegions(url);
    const c=await ready();
