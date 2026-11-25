@@ -1,4 +1,5 @@
 import {initProposalStudio} from './proposal-studio.js';
+import {sourceOptions,sourcePlan} from './finder-sources.js';
 import {customerView,jakartaDay,jakartaTime,eventFor,selectCustomers} from './customer-workspace.js';
 const $=id=>document.getElementById(id);
 let token='', leads=[], state={}, selected, page=1;
@@ -190,7 +191,7 @@ let finderState=null,editingCampaign=null;
 const choicePresets={
  fCategories:['Sekolah','Pendidikan','Bimbingan belajar','Klinik','Klinik gigi','Kesehatan','Wedding','Event organizer','Restoran','Kafe','Hotel','Travel','Rental mobil','Properti','Kontraktor','Arsitektur','Retail','UMKM','Jasa profesional','Bengkel'],
  fServices:['Landing page','Company profile','Website sekolah','Website katalog','Website toko online','Website booking','Redesign website','Maintenance website'],
- fSources:['Website publik','Media sosial bisnis','Direktori bisnis','Google Maps'],
+ fSources:sourceOptions,
  fWebsite:[['any','Semua kondisi'],['no_website','Belum punya website'],['needs_improvement','Perlu peningkatan'],['no_or_weak','Belum punya / perlu peningkatan']],
  fContact:[['either','WA atau email'],['whatsapp','WhatsApp'],['email','Email'],['both','WA dan email']],
  fInstruction:[['','Tanpa preferensi khusus'],['Prioritaskan bisnis lokal dan calon pelanggan yang relevan.','Bisnis lokal'],['Prioritaskan bisnis independen dan UMKM lokal.','UMKM independen'],['Prioritaskan bisnis aktif dengan kontak publik yang mudah diverifikasi.','Kontak mudah diverifikasi'],['Prioritaskan bisnis dengan kebutuhan website yang paling jelas dan relevan.','Kebutuhan website tinggi'],['Prioritaskan sekolah swasta dan lembaga pendidikan lokal.','Sekolah swasta & lembaga pendidikan']]
@@ -210,6 +211,12 @@ function drawChoices(id,selected,multi,extras=[]){
   const label=node('label',null,'choice-option'),input=node('input');input.type=multi?'checkbox':'radio';input.name=id;input.value=value;input.checked=picked.some(x=>normScope(x)===normScope(value));label.append(input,node('span',text));host.append(label);
  }
 }
+function updateSourcePriority(value=$('fSourcePriority').value){
+ const select=$('fSourcePriority'),auto=node('option','Otomatis sesuai industri');auto.value='';
+ select.replaceChildren(auto,...sourcePlan({sources:readChoices('fSources',true)}).map(s=>{const o=node('option',s);o.value=s;return o;}));
+ select.value=Array.from(select.options).some(o=>o.value===value)?value:'';
+}
+$('fSources').addEventListener('change',()=>updateSourcePriority());
 function readChoices(id,multi=false){
  const values=Array.from($(id).querySelectorAll('input:checked')).map(x=>x.value);
  return multi?values:(values[0]??'');
@@ -306,8 +313,11 @@ function renderFinder(){
   const actions=node('div',null,'actions'),edit=node('button','Edit campaign'),toggle=node('button',c.enabled?'Pause':'Aktifkan');
   edit.onclick=()=>openFinderEditor(c);toggle.onclick=async()=>{toggle.disabled=true;try{await persistCampaign({...c,enabled:!c.enabled});}catch(e){$('finderNotice').textContent=e.message;}finally{toggle.disabled=false;}};
   actions.append(edit,toggle);
-  card.append(head,node('p',c.regions.join(' · '),'campaign-meta'),target,meter,progressText,tags,node('p',c.districts.length?c.districts.join(' · '):'Semua kecamatan','campaign-meta'),actions);$('finderCards').append(card);
+  card.append(head,node('p',c.regions.join(' · '),'campaign-meta'),target,meter,progressText,tags,node('p','Sumber prioritas: '+sourcePlan(c).slice(0,3).join(' · '),'campaign-meta'),node('p',c.districts.length?c.districts.join(' · '):'Semua kecamatan','campaign-meta'),actions);$('finderCards').append(card);
  }
+ $('finderSourceStats').replaceChildren();
+ const stats=finderState.source_stats||[];$('finderSourceEmpty').hidden=stats.length>0;
+ for(const r of stats){const tr=node('tr');tr.append(node('td',finderState.campaigns.find(c=>c.id===r.campaign_id)?.name||r.campaign_id),node('td',r.source),node('td',String(r.added)));$('finderSourceStats').append(tr);}
  $('finderHistory').replaceChildren();
  const history=finderState.history||[];$('finderHistoryCount').textContent=history.length;$('finderHistoryEmpty').hidden=history.length>0;
  for(const r of history){const tr=node('tr');for(const key of ['day','campaign_name','target','found','added','duplicates','invalid','batches'])tr.append(node('td',String(r[key]??'—')));$('finderHistory').append(tr);}
@@ -337,6 +347,7 @@ function openFinderEditor(c){
  drawChoices('fCategories',c?.categories||[],true,[...new Set(leads.map(x=>x.category).filter(Boolean))]);
  drawChoices('fServices',c?.services||['Landing page','Company profile'],true);
  drawChoices('fSources',c?.sources||['Website publik','Direktori bisnis'],true);
+ updateSourcePriority(c?.preferred_source||'');
  drawChoices('fWebsite',c?.website_status||'any',false);
  drawChoices('fContact',c?.contact||'either',false);
  drawChoices('fInstruction',c?.instruction||'',false);
@@ -347,7 +358,7 @@ $('finderReload').onclick=loadFinder;$('finderNew').onclick=()=>openFinderEditor
 $('finderForm').onsubmit=async e=>{
  e.preventDefault();if(finderSaving)return;finderSaving=true;$('finderSave').disabled=true;
  try{
-  const c={...(editingCampaign?{id:editingCampaign}:{}),name:$('fName').value,enabled:$('fEnabled').checked,daily_limit:Number($('fLimit').value),minimum_priority:Number($('fPriority').value),website_status:readChoices('fWebsite'),contact:readChoices('fContact'),instruction:readChoices('fInstruction'),categories:readChoices('fCategories',true),services:readChoices('fServices',true),sources:readChoices('fSources',true),excluded_categories:[],...selectedScope()};
+  const c={...(editingCampaign?{id:editingCampaign}:{}),name:$('fName').value,enabled:$('fEnabled').checked,daily_limit:Number($('fLimit').value),minimum_priority:Number($('fPriority').value),website_status:readChoices('fWebsite'),contact:readChoices('fContact'),instruction:readChoices('fInstruction'),categories:readChoices('fCategories',true),services:readChoices('fServices',true),sources:readChoices('fSources',true),preferred_source:$('fSourcePriority').value,excluded_categories:finderState.campaigns.find(x=>x.id===editingCampaign)?.excluded_categories||[],...selectedScope()};
   if(!c.services.length)throw Error('Pilih minimal satu jenis jasa.');
   if(c.categories.length>20)throw Error('Pilih maksimal 20 kategori bisnis.');
   await persistCampaign(c);$('finderEditor').close();
