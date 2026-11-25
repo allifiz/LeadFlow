@@ -1,3 +1,4 @@
+import {initProposalStudio} from './proposal-studio.js';
 import {customerView,jakartaDay,jakartaTime,eventFor,selectCustomers} from './customer-workspace.js';
 const $=id=>document.getElementById(id);
 let token='', leads=[], state={}, selected, page=1;
@@ -79,11 +80,13 @@ function updateCampaignFilters(){
  select.replaceChildren(all,...[...options].sort((a,b)=>a[1].localeCompare(b[1],'id')).map(([id,name])=>{const o=node('option',name);o.value=id;return o;}));
  select.value=options.has(previous)?previous:'';
 }
+const proposalStudio=initProposalStudio({api,getLeads:()=>leads,isAuthenticated:()=>!!token});
 const viewInfo={queue:['PROSPECT MANAGEMENT','Daftar calon customer','Antrean calon customer yang belum dihubungi.'],history:['CUSTOMER HISTORY','Histori customer','Customer yang telah ditandai dihubungi, diajukan ke WhatsApp, atau diblokir. Pengajuan bukan bukti pesan diterima.'],review:['DELIVERY REVIEW','Perlu cek','Pengiriman sedang berlangsung atau belum terkonfirmasi. Periksa percakapan sebelum mengambil tindakan.']};
 function routeCustomer(){
  const hash=location.hash,view={'#customers':'queue','#customerHistory':'history','#customerReview':'review'}[hash];
- for(const child of document.querySelector('.dashboard').children){if(child.classList.contains('dashboard-footer'))continue;child.hidden=view?child.id!=='customers':child.id==='customers';}
+ for(const child of document.querySelector('.dashboard').children){if(child.classList.contains('dashboard-footer'))continue;child.hidden=hash==='#proposalStudio'?child.id!=='proposalStudio':view?child.id!=='customers':['customers','proposalStudio'].includes(child.id);}
  for(const a of document.querySelectorAll('.nav-link')){if(a.getAttribute('href')===(hash||'#overview'))a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');}
+ if(hash==='#proposalStudio'){proposalStudio.load();return;}
  if(!view)return;
  activeCustomerView=view;queuePeriod='today';page=1;
  $('search').value='';$('categoryFilter').value='';$('campaignFilter').value='';$('customerDate').value='';$('channelFilter').value='';$('draftFilter').value='';
@@ -135,7 +138,7 @@ function parseImport(text){try{const parsed=JSON.parse(text);return Array.isArra
  return text.split('\n').filter(x=>x.trim().startsWith('|')).map(x=>x.trim().replace(/^\||\|$/g,'').split('|').map(clean)).filter(x=>x.length>=3&&!/calon customer|list calon|^[-:\s]+$/.test(x[0].toLowerCase())).map((x,i)=>({name:x[0],phone:x[1].replace(/\s*\(.+\)$/,''),email:(x[2].match(/[^\s@]+@[^\s@]+\.[a-z]{2,}/i)||[])[0]||'',priority:Math.max(0,100-i)}));
  }}
 $('loginForm').onsubmit=async e=>{e.preventDefault();token=$('token').value;try{await refresh();$('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;$('token').value='';routeCustomer();loadFinder();}catch(e){token='';$('loginError').textContent=e.message;}};
-$('logout').onclick=()=>{refreshSequence++;token='';leads=[];state={};selected=null;page=1;finderState=null;$('finderCards').replaceChildren();$('finderHistory').replaceChildren();if($('finderEditor').open)$('finderEditor').close();updateCategories();$('rows').replaceChildren();$('workspace').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('loginError').textContent='';};
+$('logout').onclick=()=>{refreshSequence++;token='';proposalStudio.reset();leads=[];state={};selected=null;page=1;finderState=null;$('finderCards').replaceChildren();$('finderHistory').replaceChildren();if($('finderEditor').open)$('finderEditor').close();updateCategories();$('rows').replaceChildren();$('workspace').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('loginError').textContent='';};
 const resetFilters=()=>{page=1;render();};$('search').oninput=resetFilters;$('filter').onchange=resetFilters;$('draftFilter').onchange=resetFilters;$('categoryFilter').onchange=resetFilters;$('prevPage').onclick=()=>{page--;render();};$('nextPage').onclick=()=>{page++;render();};$('clearFilters').onclick=()=>{$('search').value='';$('filter').value='';$('draftFilter').value='';$('categoryFilter').value='';$('campaignFilter').value='';$('channelFilter').value='';$('customerDate').value='';resetFilters();};
 for(const id of ['campaignFilter','channelFilter','customerDate'])$(id).onchange=()=>{if(id==='customerDate'&&$('customerDate').value&&activeCustomerView==='queue')queuePeriod='all';resetFilters();};
 for(const b of $('queuePeriods').querySelectorAll('button'))b.onclick=()=>{queuePeriod=b.dataset.period;$('customerDate').value='';resetFilters();};
