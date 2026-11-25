@@ -1,3 +1,4 @@
+import {proposalRoute,proposalActions,proposalBridgeActions} from '../lib/proposals.js';
 import {finderConfig,studio,saveCampaign,saveBatchSize,importCampaign} from '../lib/finder.js';
 import {timingSafeEqual} from 'node:crypto';
 import {ready} from '../lib/db.js';
@@ -162,10 +163,11 @@ export default {
    if(request.method!=='GET'||!cron) return json({error:'Unauthorized'},401);
    try{return json(await runCron(await ready()));}catch(e){console.error('cron',e?.name);return json({error:'Cron gagal; cek konfigurasi dan log'},500);}
   }
-  if(!admin&&!(['import','draft-worker','finder-config','finder-import'].includes(action)&&importer)) return json({error:'Unauthorized atau ADMIN_TOKEN belum diatur (minimal 24 karakter)'},401);
+  if(!admin&&!(['import','draft-worker','finder-config','finder-import',...proposalBridgeActions].includes(action)&&importer)) return json({error:'Unauthorized atau ADMIN_TOKEN belum diatur (minimal 24 karakter)'},401);
   try{
    if(action==='finder-regions'&&request.method==='GET')return finderRegions(url);
    const c=await ready();
+   if(proposalActions.includes(action)&&request.method==='GET')return proposalRoute(c,action,'GET');
    if(action==='finder-config'&&request.method==='GET')return json(await finderConfig(c,url.searchParams.get('mode')==='batch',Number(url.searchParams.get('max_batch'))));
    if(action==='finder-studio'&&request.method==='GET')return json(await studio(c));
    if(action==='list'&&request.method==='GET'){
@@ -181,6 +183,7 @@ export default {
    const raw=await request.text();
    if(raw.length>250000) return json({error:'Payload terlalu besar'},413);
    let body;try{body=JSON.parse(raw);}catch{return json({error:'JSON tidak valid'},400);}
+   if(proposalActions.includes(action))return proposalRoute(c,action,'POST',body);
    if(action==='finder-save')return saveCampaign(c,body);
     if(action==='finder-batch-size')return saveBatchSize(c,body);
    if(action==='finder-import')return importCampaign(c,body);
