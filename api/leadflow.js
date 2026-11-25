@@ -167,7 +167,7 @@ export default {
   try{
    if(action==='finder-regions'&&request.method==='GET')return finderRegions(url);
    const c=await ready();
-   if(proposalActions.includes(action)&&request.method==='GET')return proposalRoute(c,action,'GET');
+   if(proposalActions.includes(action)&&request.method==='GET')return proposalRoute(c,action,'GET',{id:url.searchParams.get('id')});
    if(action==='finder-config'&&request.method==='GET')return json(await finderConfig(c,url.searchParams.get('mode')==='batch',Number(url.searchParams.get('max_batch'))));
    if(action==='finder-studio'&&request.method==='GET')return json(await studio(c));
    if(action==='list'&&request.method==='GET'){
